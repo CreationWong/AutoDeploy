@@ -33,7 +33,7 @@ git push (SSH:2222 / HTTP:8080)
 
 ## 快速开始
 
-### 方式一：docker compose（推荐）
+### 方式一：docker compose（快速体验）
 
 ```bash
 # 1. 构建并启动 AutoDeploy 容器
@@ -69,7 +69,53 @@ docker run -d --name autodeploy --restart unless-stopped \
   autodeploy:latest
 ```
 
-> 部署 `type: docker-compose` 的项目时，需追加 `-v /var/run/docker.sock:/var/run/docker.sock`。
+> 部署 `type: docker-compose` 的项目时，需追加 `-v /var/run/docker.sock:/var/run/docker.sock`；若应用健康检查使用 `host.docker.internal`，再追加 `--add-host=host.docker.internal:host-gateway`（Docker Desktop 已内置，Linux 需要）。
+
+### 方式三：nginx 网关（零端口，生产推荐）
+
+AutoDeploy 不发布任何端口，由单独的 nginx 容器统一入口（需要 Docker Compose v2.24+，使用 `!reset`）：
+
+```bash
+# 1. 创建共享网络
+docker network create autodeploy-gateway
+
+# 2. 部署 AutoDeploy（零端口，加入共享网络）
+AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
+  docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d --build
+
+# 3. 启动 nginx 网关（单独容器）
+cd examples/nginx-gateway && docker compose up -d
+
+# 4. 查看 AutoDeploy 生成的 HTTP 密码
+docker logs autodeploy | grep 密码
+
+# 5. 经网关推送项目
+git remote add origin http://autodeploy:<密码>@localhost:8080/app.git
+git push origin main
+```
+
+网关路由（`examples/nginx-gateway/nginx.conf`）：
+
+- 默认 server → `autodeploy:80`（Git HTTP）
+- `stream` 的 22 → `autodeploy:22`（Git SSH）
+- `blog.localhost` → `my-app-web:4000`；`app.localhost` → `autodeploy:3000`（容器内 process 应用）
+
+业务项目（`type: docker-compose`）接入同一网络，端口不发布到宿主机：
+
+```yaml
+# 项目自己的 docker-compose.yml
+services:
+  web:
+    build: .
+    container_name: my-app-web
+    networks: [gateway]
+networks:
+  gateway:
+    external: true
+    name: autodeploy-gateway
+```
+
+健康检查用网络内 DNS：`url: http://my-app-web:<端口>/`。本地测试直接用 `*.localhost` 域名（浏览器自动解析到 127.0.0.1）；生产换真实域名并在网关终止 TLS。
 
 ### 推送与端口
 
@@ -123,7 +169,7 @@ docker run -d --name autodeploy -p 22022:22 -p 18080:80 \
 | `setup` | 以 root 执行的初始化命令列表（如添加软件源、安装语言运行时） |
 | `force` | 为 `true` 时忽略缓存强制重建 |
 
-配置内容会做 sha256 缓存，未变化时输出 `基础环境未变化，跳过构建`。
+配置内容会做 sha256 缓存，未变化时输出 `基础环境未变化，跳过构建`。`packages`/`setup` 安装在容器可写层，容器被重建（非 `docker restart`）后入口脚本会按持久化快照自动重放，应用不会因运行时丢失而启动失败。
 
 ```yaml
 version: 1
@@ -191,7 +237,7 @@ env:
   APP_PORT: "8081"
 ```
 
-> compose 容器运行在宿主机 Docker 上，不是 AutoDeploy 容器内部。需要在 `docker-compose.yml` 中取消注释 `/var/run/docker.sock` 挂载。
+> compose 容器运行在宿主机 Docker 上，不是 AutoDeploy 容器内部（基础 compose 已挂载 `/var/run/docker.sock` 并配置 `extra_hosts`，不使用可移除）。服务端口由应用自己的 compose 用 `ports:` 发布到宿主机，AutoDeploy 不再为应用写死端口；如需从 AutoDeploy 容器内做健康检查，把 `healthcheck.url` 指向 `http://host.docker.internal:<端口>/`。
 
 ## .AutoDeploy 自定义脚本（部署前 CI/CD）
 
@@ -272,7 +318,7 @@ jobs:
 ├── deploy/app                # 最近一次推送的代码工作目录
 ├── state/<name>/deploy.json  # 最近部署状态（commit、branch、success/failed）
 ├── state/<name>/environment.yml      # 当前生效的 environment 快照
-├── state/<name>/environment.sha256   # 基础环境缓存指纹
+├── state/<name>/environment.boot     # 上次构建环境的容器实例 ID
 ├── state/<name>/start.sh     # process 类型的启动脚本
 ├── state/<name>/supervisor.conf
 ├── logs/<name>/deploy.log    # 部署日志
