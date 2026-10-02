@@ -96,8 +96,10 @@ for app_conf in "$DATA_DIR"/state/*/supervisor.conf; do
   ln -sf "$app_conf" "/etc/supervisor/conf.d/autodeploy-${app_name}.conf"
 done
 
-log "SSH  推送地址: ssh://git@<host>:2222/~/${REPO_NAME}.git  (部署分支: ${DEPLOY_BRANCH})"
-log "HTTP 推送地址: http://<user>@<host>:8080/${REPO_NAME}.git"
+SSH_PORT="${AUTODEPLOY_SSH_PORT:-2222}"
+HTTP_PORT="${AUTODEPLOY_HTTP_PORT:-8080}"
+log "SSH  推送地址: ssh://git@<host>:${SSH_PORT}/~/${REPO_NAME}.git  (部署分支: ${DEPLOY_BRANCH})"
+log "HTTP 推送地址: http://<user>@<host>:${HTTP_PORT}/${REPO_NAME}.git"
 log "启动完成，扫描到配置 ${CONFIG_NAME} 才会部署"
 
 exec "$@"
