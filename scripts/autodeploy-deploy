@@ -120,8 +120,8 @@ run_root_command() {
   return "$status"
 }
 
-write_env_exports() {
-  local kv key value
+write_exports() {
+  local file="$1" expr="$2" kv key value
   while IFS= read -r -d '' kv; do
     key="${kv%%=*}"
     value="${kv#*=}"
@@ -129,7 +129,11 @@ write_env_exports() {
       die "非法环境变量名: $key"
     fi
     printf 'export %s=%q\n' "$key" "$value"
-  done < <(yq -r0 '.env // {} | to_entries | .[] | .key + "=" + (.value | tostring)' "$CFG")
+  done < <(yq -r0 "$expr" "$file")
+}
+
+write_env_exports() {
+  write_exports "$CFG" '.env // {} | to_entries | .[] | .key + "=" + (.value | tostring)'
 }
 
 validate_types() {
@@ -216,6 +220,213 @@ prepare_environment() {
   mv "$snapshot.tmp" "$snapshot"
   printf '%s\n' "$new_hash" > "$STATE_DIR/environment.sha256"
   log "基础环境构建完成"
+}
+
+run_project_hook() {
+  local stage="$1" hook="$TARGET/.AutoDeploy/$1.sh" runner
+  if [ ! -f "$hook" ]; then
+    return 0
+  fi
+  log "执行 .AutoDeploy/$stage.sh"
+  runner="$STATE_DIR/hook-$stage.sh"
+  {
+    printf '#!/bin/bash\nset -e\n'
+    printf 'cd %q\n' "$TARGET"
+    printf 'export PATH=%q\n' "$DEFAULT_PATH"
+    printf 'export AUTODEPLOY_NAME=%q\n' "$STATE_NAME"
+    printf 'export AUTODEPLOY_TYPE=%q\n' "$STATE_TYPE"
+    printf 'export AUTODEPLOY_COMMIT=%q\n' "$STATE_COMMIT"
+    printf 'export AUTODEPLOY_BRANCH=%q\n' "$STATE_BRANCH"
+    printf 'export AUTODEPLOY_PROJECT_DIR=%q\n' "$TARGET"
+    write_env_exports
+    printf 'exec /bin/bash %q\n' "$hook"
+  } > "$runner"
+  chmod 700 "$runner"
+  if ! run_script_as root "运行 .AutoDeploy/$stage.sh" "$runner"; then
+    rm -f "$runner"
+    return 1
+  fi
+  rm -f "$runner"
+  return 0
+}
+
+run_workflows() {
+  local wf_dir="$TARGET/.AutoDeploy/workflows" wf ran=0
+  if [ ! -d "$wf_dir" ]; then
+    return 0
+  fi
+  for wf in "$wf_dir"/*.yml "$wf_dir"/*.yaml; do
+    [ -f "$wf" ] || continue
+    ran=1
+    run_workflow_file "$wf"
+  done
+  if [ "$ran" = "0" ]; then
+    log ".AutoDeploy/workflows 下没有 workflow 文件"
+  fi
+  return 0
+}
+
+run_workflow_file() {
+  local wf="$1" wf_name jobs_file job
+  wf_name="$(basename "$wf")"
+  if ! yq '.' "$wf" >/dev/null 2>&1; then
+    die "workflow 解析失败: $wf_name"
+  fi
+  jobs_file="$STATE_DIR/workflow-jobs.txt"
+  yq -r '.jobs // {} | to_entries | .[] | .key' "$wf" > "$jobs_file"
+  if [ ! -s "$jobs_file" ]; then
+    log "workflow $wf_name 没有 jobs，跳过"
+    rm -f "$jobs_file"
+    return 0
+  fi
+  log "执行 workflow: $wf_name"
+  while IFS= read -r job; do
+    if [ -n "$job" ]; then
+      run_workflow_job "$wf" "$wf_name" "$job"
+    fi
+  done < "$jobs_file"
+  rm -f "$jobs_file"
+}
+
+run_workflow_job() {
+  local wf="$1" wf_name="$2" job="$3"
+  local job_path steps_count default_shell default_wd probe i
+  printf -v job_path '.jobs["%s"]' "$job"
+
+  for probe in strategy services container; do
+    if [ "$(yq -r "${job_path}.${probe} != null" "$wf")" = "true" ]; then
+      die "workflow $wf_name job $job: 暂不支持 $probe"
+    fi
+  done
+  if [ "$(yq -r "${job_path}.needs != null" "$wf")" = "true" ]; then
+    log "警告: workflow $wf_name job $job 的 needs 被忽略，按文件顺序执行"
+  fi
+
+  steps_count="$(yq -r "(${job_path}.steps // []) | length" "$wf")"
+  if [ "$steps_count" = "0" ]; then
+    log "workflow $wf_name job $job 没有 steps，跳过"
+    return 0
+  fi
+  default_shell="$(yq -r '.defaults.run.shell // ""' "$wf")"
+  default_wd="$(yq -r '.defaults.run."working-directory" // ""' "$wf")"
+
+  local job_env_file="$STATE_DIR/workflow-job-env.sh"
+  local github_env="$STATE_DIR/github-env"
+  local github_output="$STATE_DIR/github-output"
+  : > "$job_env_file"
+  write_exports "$wf" \
+    "((.env // {}) * (${job_path}.env // {})) | to_entries | .[] | .key + \"=\" + (.value | tostring)" \
+    >> "$job_env_file"
+
+  log "workflow $wf_name / job $job（$steps_count 步）"
+  for ((i = 0; i < steps_count; i++)); do
+    local step_path step_name step_uses step_run step_shell step_wd step_if step_coe label
+    printf -v step_path '%s.steps[%d]' "$job_path" "$i"
+    step_name="$(yq -r "${step_path}.name // \"\"" "$wf")"
+    step_uses="$(yq -r "${step_path}.uses // \"\"" "$wf")"
+    step_run="$(yq -r "${step_path}.run // \"\"" "$wf")"
+    step_shell="$(yq -r "${step_path}.shell // \"\"" "$wf")"
+    step_wd="$(yq -r "${step_path}.\"working-directory\" // \"\"" "$wf")"
+    step_if="$(yq -r "${step_path}.if // \"\"" "$wf")"
+    step_coe="$(yq -r "${step_path}.\"continue-on-error\" // false" "$wf")"
+    label="${step_name:-step $((i + 1))}"
+
+    if [ -n "$step_uses" ]; then
+      case "$step_uses" in
+        actions/checkout@*)
+          log "workflow $wf_name / $job / $label: 跳过 $step_uses（代码已检出）"
+          continue
+          ;;
+        *)
+          die "workflow $wf_name / $job / $label: 不支持 uses: $step_uses（仅支持 actions/checkout）"
+          ;;
+      esac
+    fi
+    if [ -z "$step_run" ]; then
+      die "workflow $wf_name / $job / $label: 步骤缺少 run"
+    fi
+    if [ -n "$step_if" ]; then
+      log "警告: workflow $wf_name / $job / $label 的 if 条件被忽略（按上一步成功后执行）"
+    fi
+
+    local effective_shell="$step_shell"
+    if [ -z "$effective_shell" ]; then
+      effective_shell="$default_shell"
+    fi
+    case "$effective_shell" in
+      ""|bash|sh|/bin/bash|/bin/sh) ;;
+      *) die "workflow $wf_name / $job / $label: 不支持的 shell: $effective_shell（仅支持 bash/sh）" ;;
+    esac
+
+    local wd_rel="$step_wd" step_dir="$TARGET"
+    if [ -z "$wd_rel" ]; then
+      wd_rel="$default_wd"
+    fi
+    if [ -n "$wd_rel" ]; then
+      step_dir="$(realpath -m -- "$TARGET/$wd_rel")"
+      case "$step_dir" in
+        "$TARGET"|"$TARGET"/*) ;;
+        *) die "workflow $wf_name / $job / $label: working-directory 必须位于项目目录内: $wd_rel" ;;
+      esac
+      if [ ! -d "$step_dir" ]; then
+        die "workflow $wf_name / $job / $label: working-directory 不存在: $wd_rel"
+      fi
+    fi
+
+    local runner="$STATE_DIR/workflow-step.sh"
+    : > "$github_env"
+    : > "$github_output"
+    {
+      printf '#!/bin/bash\nset -e\n'
+      printf 'cd %q\n' "$step_dir"
+      printf 'export PATH=%q\n' "$DEFAULT_PATH"
+      printf 'export CI=true\n'
+      printf 'export GITHUB_WORKSPACE=%q\n' "$TARGET"
+      printf 'export GITHUB_SHA=%q\n' "$STATE_COMMIT"
+      printf 'export GITHUB_REF_NAME=%q\n' "$STATE_BRANCH"
+      printf 'export AUTODEPLOY_NAME=%q\n' "$STATE_NAME"
+      printf 'export AUTODEPLOY_TYPE=%q\n' "$STATE_TYPE"
+      printf 'export AUTODEPLOY_COMMIT=%q\n' "$STATE_COMMIT"
+      printf 'export AUTODEPLOY_BRANCH=%q\n' "$STATE_BRANCH"
+      printf 'export AUTODEPLOY_PROJECT_DIR=%q\n' "$TARGET"
+      printf 'export GITHUB_ENV=%q\n' "$github_env"
+      printf 'export GITHUB_OUTPUT=%q\n' "$github_output"
+      printf '[ -f %q ] && . %q\n' "$job_env_file" "$job_env_file"
+      write_exports "$wf" \
+        "(${step_path}.env // {}) | to_entries | .[] | .key + \"=\" + (.value | tostring)"
+      printf 'echo %q\n' "+ ${step_run%%$'\n'*}"
+      printf '%s\n' "$step_run"
+    } > "$runner"
+    chmod 700 "$runner"
+
+    if ! run_script_as root "workflow $wf_name / $job / $label" "$runner"; then
+      rm -f "$runner"
+      if [ "$step_coe" = "true" ]; then
+        log "步骤失败但 continue-on-error=true，继续: $label"
+        continue
+      fi
+      die "workflow $wf_name / $job / $label 执行失败"
+    fi
+    rm -f "$runner"
+
+    if [ -s "$github_env" ]; then
+      local kv key value
+      while IFS= read -r kv; do
+        if [ -z "$kv" ]; then
+          continue
+        fi
+        key="${kv%%=*}"
+        value="${kv#*=}"
+        if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+          log "警告: 忽略非法 GITHUB_ENV 变量名: $key"
+          continue
+        fi
+        printf 'export %s=%q\n' "$key" "$value" >> "$job_env_file"
+      done < "$github_env"
+      : > "$github_env"
+    fi
+  done
+  rm -f "$job_env_file" "$github_env" "$github_output"
 }
 
 cleanup_previous() {
@@ -508,6 +719,14 @@ main() {
   write_status "deploying"
 
   prepare_environment
+
+  if ! run_project_hook before; then
+    die ".AutoDeploy/before.sh 执行失败，已中止部署"
+  fi
+
+  run_workflows
+  chown -R git:git "$TARGET" 2>/dev/null || true
+
   cleanup_previous "$STATE_TYPE" "$name"
 
   case "$STATE_TYPE" in
@@ -517,6 +736,12 @@ main() {
   esac
 
   health_check
+
+  if ! run_project_hook after; then
+    die ".AutoDeploy/after.sh 执行失败"
+  fi
+  chown -R git:git "$TARGET" 2>/dev/null || true
+
   write_status "success"
   log "部署完成: $name ($STATE_TYPE)"
 }

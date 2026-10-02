@@ -1,0 +1,22 @@
+name: ci
+
+on: [push]
+
+env:
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 校验项目文件
+        run: |
+          test -f server.py
+          echo "ci: server.py 存在"
+      - name: 语法检查
+        run: python3 -m py_compile server.py
+      - name: 通过 GITHUB_ENV 传递变量
+        run: echo "CHECKED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - name: 读取上一步变量
+        run: 'echo "ci: 检查时间 ${CHECKED_AT}"'
