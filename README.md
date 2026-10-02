@@ -1,16 +1,14 @@
 # AutoDeploy
 
-一个自带 Git 服务器与自动部署能力的 Docker 容器。
+自带 Git 服务器与自动部署能力的 Docker 容器：把代码 `git push` 进来，容器扫描项目根目录的 `AutoDeploy.config.yaml`——没有就只入库不部署，有就按配置部署。
 
-用户把代码 `git push` 到这个容器后，容器会在项目根目录扫描 `AutoDeploy.config.yaml`：
+- `type: process`：以 supervisor 托管进程，运行在 AutoDeploy 容器内部；
+- `type: docker-compose`：调用宿主机 Docker，以兄弟容器运行应用的 compose。
 
-- 没有找到 → 只保留推送，不部署，日志输出 `跳过部署`；
-- 找到 → 按配置部署服务到本容器（`process`）或通过 docker compose 启动子容器（`docker-compose`）。
-
-## 架构
+## 工作原理
 
 ```
-git push (SSH:2222 / HTTP:8080)
+git push (SSH / HTTP)
         │
         ▼
   OpenSSH ── git-shell ──┐
@@ -19,17 +17,22 @@ git push (SSH:2222 / HTTP:8080)
                                   ▼
                       导出代码 -> /data/deploy/app
                                   │
-                     扫描 AutoDeploy.config.yaml
-                       │ 无                    │ 有
-                       ▼                       ▼
-                    跳过部署      autodeploy-deploy（root）
-                                             │
-                        ┌────────────────────┴────────────────────┐
-                        ▼                                         ▼
-              type: process                            type: docker-compose
-     生成 start.sh + supervisor 配置                  docker compose up -d
-       进程常驻在本容器内                          （需挂载 /var/run/docker.sock）
+                    扫描 AutoDeploy.config.yaml
+                      │ 无                    │ 有
+                      ▼                       ▼
+                   跳过部署      autodeploy-deploy（sudo，root）
+                                              │
+                         执行顺序：environment → before.sh
+                         → workflows → 部署 → 健康检查 → after.sh
+                                              │
+                         ┌────────────────────┴────────────────────┐
+                         ▼                                         ▼
+               type: process                            type: docker-compose
+      生成 start.sh + supervisor 配置                  docker compose up -d
+        进程常驻在本容器内                          （需挂载 /var/run/docker.sock）
 ```
+
+部署状态写入 `/data/state/<name>/deploy.json`（`success` / `failed`），部署失败时旧服务继续运行。
 
 ## 快速开始
 
@@ -53,6 +56,12 @@ docker exec autodeploy supervisorctl status
 docker exec autodeploy curl -s http://127.0.0.1:3000/
 ```
 
+宿主端口可改（容器内固定监听 22/80）：
+
+```bash
+AUTODEPLOY_SSH_PORT=22022 AUTODEPLOY_HTTP_PORT=18080 docker compose up -d
+```
+
 ### 方式二：docker run
 
 ```bash
@@ -61,6 +70,8 @@ docker build -t autodeploy:latest .
 docker run -d --name autodeploy --restart unless-stopped \
   -p 2222:22 -p 8080:80 \
   -v autodeploy-data:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --add-host=host.docker.internal:host-gateway \
   -e AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
   -e AUTODEPLOY_HTTP_USER=autodeploy \
   -e AUTODEPLOY_HTTP_PASSWORD= \
@@ -69,21 +80,21 @@ docker run -d --name autodeploy --restart unless-stopped \
   autodeploy:latest
 ```
 
-> 部署 `type: docker-compose` 的项目时，需追加 `-v /var/run/docker.sock:/var/run/docker.sock`；若应用健康检查使用 `host.docker.internal`，再追加 `--add-host=host.docker.internal:host-gateway`（Docker Desktop 已内置，Linux 需要）。
+> `docker.sock` 与 `--add-host` 是 `type: docker-compose` 部署需要的；只跑 `process` 类型可去掉。`AUTODEPLOY_HTTP_PASSWORD` 留空则首次启动随机生成并打印。
 
 ### 方式三：nginx 网关（零端口，生产推荐）
 
 AutoDeploy 不发布任何端口，由单独的 nginx 容器统一入口（需要 Docker Compose v2.24+，使用 `!reset`）：
 
 ```bash
-# 1. 创建共享网络
+# 1. 创建共享网络（名字可用 AUTODEPLOY_NETWORK 覆盖）
 docker network create autodeploy-gateway
 
 # 2. 部署 AutoDeploy（零端口，加入共享网络）
 AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
   docker compose -f docker-compose.yml -f docker-compose.gateway.yml up -d --build
 
-# 3. 启动 nginx 网关（单独容器）
+# 3. 启动 nginx 网关（单独容器，默认发布 2222/8080）
 cd examples/nginx-gateway && docker compose up -d
 
 # 4. 查看 AutoDeploy 生成的 HTTP 密码
@@ -94,13 +105,12 @@ git remote add origin http://autodeploy:<密码>@localhost:8080/app.git
 git push origin main
 ```
 
-网关路由（`examples/nginx-gateway/nginx.conf`）：
+网关路由见 `examples/nginx-gateway/nginx.conf`：
 
-- 默认 server → `autodeploy:80`（Git HTTP）
-- `stream` 的 22 → `autodeploy:22`（Git SSH）
-- `blog.localhost` → `my-app-web:4000`；`app.localhost` → `autodeploy:3000`（容器内 process 应用）
+- 默认 server → `autodeploy:80`（Git HTTP）；`stream` 的 22 → `autodeploy:22`（Git SSH）；
+- `blog.localhost` → `my-app-web:4000`；`app.localhost` → `autodeploy:3000`（容器内 process 应用）。
 
-业务项目（`type: docker-compose`）接入同一网络，端口不发布到宿主机：
+业务项目接入共享网络，端口不发布到宿主机：
 
 ```yaml
 # 项目自己的 docker-compose.yml
@@ -115,61 +125,45 @@ networks:
     name: autodeploy-gateway
 ```
 
-健康检查用网络内 DNS：`url: http://my-app-web:<端口>/`。本地测试直接用 `*.localhost` 域名（浏览器自动解析到 127.0.0.1）；生产换真实域名并在网关终止 TLS。
+健康检查用网络内 DNS：`url: http://my-app-web:<端口>/`。本地可用 `*.localhost` 域名（浏览器自动解析到 127.0.0.1）；生产换真实域名并在网关终止 TLS。
 
-### 推送与端口
-
-HTTP 推送：
-
-```bash
-git push http://autodeploy:<密码>@localhost:8080/app.git main
-```
-
-宿主端口可自行指定（容器内部固定监听 22/80）：compose 用环境变量，docker run 直接改 `-p`（同时设置 `AUTODEPLOY_SSH_PORT` / `AUTODEPLOY_HTTP_PORT` 只影响启动日志提示）：
-
-```bash
-# compose
-AUTODEPLOY_SSH_PORT=22022 AUTODEPLOY_HTTP_PORT=18080 docker compose up -d
-
-# docker run
-docker run -d --name autodeploy -p 22022:22 -p 18080:80 \
-  -e AUTODEPLOY_SSH_PORT=22022 -e AUTODEPLOY_HTTP_PORT=18080 \
-  -v autodeploy-data:/data autodeploy:latest
-```
-
-## 推送地址
+## Git 推送
 
 | 协议 | 地址 | 认证 |
 | --- | --- | --- |
-| SSH | `ssh://git@<host>:<SSH_PORT>/~/app.git`（默认 2222） | `AUTHORIZED_KEYS` 环境变量或 `/data/authorized_keys` 挂载文件 |
+| SSH | `ssh://git@<host>:<SSH_PORT>/~/app.git`（默认 2222） | `AUTHORIZED_KEYS` 或挂载 `/data/authorized_keys` |
 | HTTP | `http://<user>@<host>:<HTTP_PORT>/app.git`（默认 8080） | `AUTODEPLOY_HTTP_USER` / `AUTODEPLOY_HTTP_PASSWORD`，或首次启动随机生成并打印 |
 
-裸仓库固定为 `${REPO_NAME}.git`（默认 `app.git`）。默认只有 `DEPLOY_BRANCH` 匹配的分支触发部署，支持逗号分隔或通配符（如 `main,release/*` 或 `*`）。
+- 裸仓库固定为 `${REPO_NAME}.git`（默认 `app.git`）。
+- 只有 `DEPLOY_BRANCH` 匹配的分支触发部署，支持逗号分隔和通配（如 `main,release/*` 或 `*`）。
+- 轮换 HTTP 密码：删除 `/data/htpasswd` 后重启，或设置 `AUTODEPLOY_HTTP_PASSWORD`。
 
 ## AutoDeploy.config.yaml
 
-放在项目根目录（可用 `AUTODEPLOY_CONFIG_NAME` 改名）。公共字段：
+放在项目根目录（可用 `AUTODEPLOY_CONFIG_NAME` 改名）。
+
+### 公共字段
 
 | 字段 | 说明 |
 | --- | --- |
 | `version` | 必填，当前只支持 `1` |
 | `name` | 可选，应用名，默认取 `REPO_NAME`；决定状态/日志目录与 supervisor 程序名 |
 | `type` | `process`（默认）或 `docker-compose` |
-| `env` | 注入应用/部署命令的环境变量映射 |
-| `healthcheck` | 可选：`url` 或 `port` + `timeout`（秒，默认 30），部署后轮询，失败则标记部署失败 |
+| `env` | 注入应用、部署命令、钩子与 workflow 的环境变量映射 |
+| `healthcheck` | 可选：`url` 或 `port` + `timeout`（秒，默认 30），部署后轮询，失败标记部署失败 |
 | `environment` | 可选：基础环境构建（见下），任何 `type` 都在部署前执行 |
 
-### environment（根据配置构建基础环境）
+### environment（基础环境构建）
 
-部署脚本会按 `environment` 在容器内准备运行时，无需为了换运行时重新构建镜像：
+按配置在容器内准备运行时，无需为换运行时重建镜像：
 
 | 字段 | 说明 |
 | --- | --- |
 | `packages` | 需要安装的 apt 包列表，已安装的自动跳过 |
-| `setup` | 以 root 执行的初始化命令列表（如添加软件源、安装语言运行时） |
+| `setup` | 以 root 执行的初始化命令列表（添加软件源、安装语言运行时等） |
 | `force` | 为 `true` 时忽略缓存强制重建 |
 
-配置内容会做 sha256 缓存，未变化时输出 `基础环境未变化，跳过构建`。`packages`/`setup` 安装在容器可写层，容器被重建（非 `docker restart`）后入口脚本会按持久化快照自动重放，应用不会因运行时丢失而启动失败。
+配置内容按 sha256 缓存，未变化输出 `基础环境未变化，跳过构建`。安装在容器可写层；容器被重建后入口脚本会按持久化快照自动重放，应用不会因运行时丢失而启动失败。
 
 ```yaml
 version: 1
@@ -181,14 +175,9 @@ environment:
   setup:
     - curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     - apt-get install -y nodejs
-env:
-  NODE_ENV: production
-install:
-  - npm ci
-start: node server.js
 ```
 
-### type: process（默认，运行在本容器内）
+### type: process（运行在本容器内）
 
 | 字段 | 说明 |
 | --- | --- |
@@ -196,7 +185,8 @@ start: node server.js
 | `user` | 可选，运行用户，默认 `git` |
 | `install` | 可选，部署前按顺序执行的命令列表 |
 | `build` | 可选，构建命令列表 |
-| `start` | 必填，启动命令；由 supervisor 托管，崩溃自动重启，容器重启后自动拉起 |
+| `start` | 必填，启动命令；supervisor 托管，崩溃自动重启，容器重建后自动拉起 |
+| `healthcheck.url` | 用 `http://127.0.0.1:<端口>/` |
 
 ```yaml
 version: 1
@@ -215,16 +205,18 @@ healthcheck:
   timeout: 30
 ```
 
-> `process` 会直接在本容器内执行应用。运行时的两种准备方式：轻量的用上面的 `environment.packages` / `environment.setup` 在部署时安装；重型的（如整套 Node/JDK 工具链）建议用构建参数 `BASE_IMAGE` 直接换底座，例如：`docker compose build --build-arg BASE_IMAGE=node:20-bookworm-slim`。
+> 运行时准备：轻量的用 `environment.packages` / `environment.setup`；重型的（整套 Node/JDK 工具链）用构建参数换底座，如 `docker compose build --build-arg BASE_IMAGE=node:20-bookworm-slim`。
 
-### type: docker-compose（需要挂载 docker.sock）
+### type: docker-compose（兄弟容器）
 
 | 字段 | 说明 |
 | --- | --- |
 | `file` | 可选，compose 文件路径，默认自动查找 `compose.yaml` / `compose.yml` / `docker-compose.yml` / `docker-compose.yaml` |
 | `services` | 可选，只启动指定服务 |
 | `build` | 可选，是否 `up --build`，默认 `true` |
-| `env` | 透传给 compose 命令的环境变量（可用于 `${VAR}` 插值） |
+| `env` | 透传给 compose（可用于 `${VAR}` 插值，写入 `--env-file`） |
+
+服务端口由应用自己的 compose 用 `ports:` 发布，或加入外部网络由网关代理，AutoDeploy 不写死应用端口。容器内做健康检查时用 `host.docker.internal` 或网络内 DNS。
 
 ```yaml
 version: 1
@@ -237,37 +229,30 @@ env:
   APP_PORT: "8081"
 ```
 
-> compose 容器运行在宿主机 Docker 上，不是 AutoDeploy 容器内部（基础 compose 已挂载 `/var/run/docker.sock` 并配置 `extra_hosts`，不使用可移除）。服务端口由应用自己的 compose 用 `ports:` 发布到宿主机，AutoDeploy 不再为应用写死端口；如需从 AutoDeploy 容器内做健康检查，把 `healthcheck.url` 指向 `http://host.docker.internal:<端口>/`。
+## .AutoDeploy（部署前 CI/CD）
 
-## .AutoDeploy 自定义脚本（部署前 CI/CD）
+### shell 钩子
 
-项目根目录可创建 `.AutoDeploy/` 目录放置钩子脚本，按部署生命周期自动执行：
+| 脚本 | 执行时机 | 失败后果 |
+| --- | --- | --- |
+| `.AutoDeploy/before.sh` | `environment` 构建后、正式部署前 | 中止部署，旧服务继续运行 |
+| `.AutoDeploy/after.sh` | 健康检查通过后 | 本次部署标记 `failed` |
 
-| 脚本 | 执行时机 |
-| --- | --- |
-| `.AutoDeploy/before.sh` | `environment` 构建完成后、正式部署（install/build/start）之前；失败则中止部署 |
-| `.AutoDeploy/after.sh` | 健康检查通过后；失败则本次部署标记为 `failed` |
-
-- 以 root 执行，工作目录为项目根，脚本随 `git archive` 推送；
-- 自动注入配置里的 `env`，以及 `AUTODEPLOY_NAME`、`AUTODEPLOY_TYPE`、`AUTODEPLOY_COMMIT`、`AUTODEPLOY_BRANCH`、`AUTODEPLOY_PROJECT_DIR`；
+- 以 root 执行，工作目录为项目根，随 `git archive` 推送；
+- 注入配置里的 `env`，以及 `AUTODEPLOY_NAME`、`AUTODEPLOY_TYPE`、`AUTODEPLOY_COMMIT`、`AUTODEPLOY_BRANCH`、`AUTODEPLOY_PROJECT_DIR`；
 - 常见用法：跑测试/代码检查、发通知、数据库迁移、清理缓存；
-- 无论是否可执行都会用 bash 运行。
+- 无需可执行位，统一用 bash 运行。
 
 ```bash
 # .AutoDeploy/before.sh
 #!/bin/bash
 set -e
 npm ci && npm test
-
-# .AutoDeploy/after.sh
-#!/bin/bash
-set -e
-curl -fsS -X POST "https://hooks.example.com/deploy?name=${AUTODEPLOY_NAME}&commit=${AUTODEPLOY_COMMIT}"
 ```
 
 ### GitHub Actions 风格 workflow
 
-`.AutoDeploy/workflows/*.yml`（或 `.yaml`）按 GitHub Actions 语法执行，时机在 `before.sh` 之后、正式部署之前，按文件名顺序：
+`.AutoDeploy/workflows/*.yml`（或 `.yaml`）在 `before.sh` 之后、正式部署之前，按文件名顺序执行：
 
 ```yaml
 name: ci
@@ -280,13 +265,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 跑测试
-        working-directory: .
         run: |
           pip install -r requirements.txt
           pytest -q
 ```
 
-- 支持：`jobs`（按定义顺序）、`steps`、`run`（含多行）、`name`、workflow/job/step 三级 `env`（就近覆盖）、`working-directory`、`defaults.run.shell` / `defaults.run.working-directory`、`continue-on-error`、`actions/checkout`（跳过，代码已检出）、`GITHUB_ENV` 跨步骤传递变量；
+- 支持：`jobs`（按定义顺序）、`steps`、`run`（含多行）、`name`、workflow/job/step 三级 `env`（就近覆盖）、`working-directory`、`defaults.run.shell` / `defaults.run.working-directory`、`continue-on-error`、`actions/checkout`（跳过，代码已检出）、`GITHUB_ENV` 跨步骤传变量；
 - 自动注入：`CI=true`、`GITHUB_WORKSPACE`、`GITHUB_SHA`、`GITHUB_REF_NAME`、`AUTODEPLOY_*`；
 - 不支持：`uses`（除 actions/checkout）、`strategy/matrix`、`services`、`container`（报错中止）；`if`、`needs` 忽略并警告；`on`、`runs-on` 仅兼容忽略；
 - 步骤以 root 执行，部署前会把工作目录交还给 `git` 用户。
@@ -295,52 +279,60 @@ jobs:
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `AUTODEPLOY_SSH_PORT` | `2222` | 宿主机映射的 SSH 端口（docker compose 变量，容器内固定 22） |
-| `AUTODEPLOY_HTTP_PORT` | `8080` | 宿主机映射的 HTTP 端口（docker compose 变量，容器内固定 80） |
+| `AUTODEPLOY_SSH_PORT` | `2222` | 宿主机映射的 SSH 端口（compose 变量，容器内固定 22） |
+| `AUTODEPLOY_HTTP_PORT` | `8080` | 宿主机映射的 HTTP 端口（compose 变量，容器内固定 80） |
 | `REPO_NAME` | `app` | 裸仓库名（`${REPO_NAME}.git`），也作为默认应用名 |
 | `DEPLOY_BRANCH` | `main` | 触发部署的分支，支持逗号分隔和 `*` 通配 |
 | `AUTODEPLOY_CONFIG_NAME` | `AutoDeploy.config.yaml` | 部署配置文件名 |
 | `AUTHORIZED_KEYS` | 空 | SSH 公钥内容（可多行），与 `/data/authorized_keys` 合并 |
 | `AUTODEPLOY_HTTP_USER` | `autodeploy` | HTTP Basic 用户名 |
 | `AUTODEPLOY_HTTP_PASSWORD` | 空 | HTTP Basic 密码，留空则首次随机生成 |
-| `AUTODEPLOY_APP_USER` | `git` | `process` 类型默认运行用户，可被配置文件的 `user` 覆盖 |
+| `AUTODEPLOY_APP_USER` | `git` | `process` 默认运行用户，可被配置文件的 `user` 覆盖 |
 | `AUTODEPLOY_DATA_DIR` | `/data` | 数据目录 |
-| `BASE_IMAGE`（构建参数） | `debian:bookworm-slim` | 容器底座镜像，重型运行时可直接换底座 |
-| `YQ_VERSION`（构建参数） | `v4.44.3` | 部署脚本用于解析 YAML 的 yq 版本 |
+| `AUTODEPLOY_NETWORK` | `autodeploy-gateway` | 网关模式下共享网络名 |
+| `GATEWAY_HTTP_PORT` / `GATEWAY_SSH_PORT` | `8080` / `2222` | 网关容器发布端口 |
+| `BASE_IMAGE`（构建参数） | `debian:bookworm-slim` | 底座镜像，重型运行时换底座 |
 | `INSTALL_DOCKER_CLI`（构建参数） | `1` | 是否安装 docker CLI / compose 插件 |
+| `YQ_VERSION`（构建参数） | `v4.44.3` | 部署脚本解析 YAML 的 yq 版本 |
 
-## 数据与日志（都在 `/data` 卷内）
+## 数据与日志
+
+都在 `/data` 卷内：
 
 ```
 /data
-├── git-home/app.git          # 裸仓库
+├── git-home/app.git                  # 裸仓库
 ├── git-home/.ssh/authorized_keys
-├── deploy/app                # 最近一次推送的代码工作目录
-├── state/<name>/deploy.json  # 最近部署状态（commit、branch、success/failed）
+├── htpasswd                          # HTTP Basic 凭据
+├── deploy/app                        # 最近一次推送的代码工作目录
+├── state/<name>/deploy.json          # 最近部署状态
 ├── state/<name>/environment.yml      # 当前生效的 environment 快照
 ├── state/<name>/environment.boot     # 上次构建环境的容器实例 ID
-├── state/<name>/start.sh     # process 类型的启动脚本
+├── state/<name>/start.sh             # process 类型启动脚本
 ├── state/<name>/supervisor.conf
-├── logs/<name>/deploy.log    # 部署日志
-└── logs/<name>/app.log       # 应用 stdout / stderr
+├── logs/<name>/deploy.log            # 部署日志
+├── logs/<name>/app.log               # 应用 stdout
+└── logs/<name>/app.err.log           # 应用 stderr
 ```
 
 ## 安全说明
 
 - SSH 只允许 `git` 用户、仅公钥认证，shell 限制为 `git-shell`；
-- `git` 用户仅能通过 sudo 免密执行 `/usr/local/bin/autodeploy-deploy` 这一条命令；
-- 部署脚本会校验目标目录必须位于 `/data/deploy` 内；
+- `git` 用户只能通过 sudo 免密执行 `/usr/local/bin/autodeploy-deploy`；
+- 部署脚本校验目标目录必须位于 `/data/deploy` 内；
 - 能推送到该仓库的人等于能在容器内以 `git` 用户执行安装/构建/启动命令，请妥善保管推送凭据；
-- HTTP 密码非空时由 `/dev/urandom` 生成（真随机、无固定种子），仅首次启动打印并持久化在 `/data/htpasswd`；需要轮换时删除该文件后重启，或设置 `AUTODEPLOY_HTTP_PASSWORD`；
-- SSH 主机密钥在首次启动时随机生成并持久化在 `/data/ssh`，不烤进镜像。
-
-## 仓库开发辅助（Ponytail）
-
-`opencode.json` 已声明 [ponytail](https://github.com/DietrichGebert/ponytail) 插件，opencode 启动时会自动安装并按 YAGNI 规则约束代码改动。默认强度 `full`，可用 `/ponytail lite|full|ultra|off` 切换，或用 `PONYTAIL_DEFAULT_MODE` 环境变量指定。修改配置后需要退出并重启 opencode 才会生效。
+- 挂载 `docker.sock` 意味着容器可控制宿主机 Docker，仅在不跑 `docker-compose` 类型时移除；
+- HTTP 密码由 `/dev/urandom` 生成（真随机、无固定种子），仅首次启动打印并持久化在 `/data/htpasswd`；
+- SSH 主机密钥首次启动随机生成并持久化在 `/data/ssh`，不烤进镜像。
 
 ## 常见问题
 
-- **推送成功但没部署？** 确认分支在 `DEPLOY_BRANCH` 内、根目录存在 `AutoDeploy.config.yaml`，并查看 `docker logs autodeploy` 或 `/data/logs/<name>/deploy.log`。
+- **推送成功但没部署？** 确认分支在 `DEPLOY_BRANCH` 内、根目录存在 `AutoDeploy.config.yaml`，查看 `docker logs autodeploy` 或 `/data/logs/<name>/deploy.log`。
 - **进程没起来？** `docker exec autodeploy supervisorctl status`，再看 `app.err.log`。
-- **推送输出 `[AutoDeploy] 错误: ...` 但 push 仍然成功？** post-receive 在对象入库后运行，无法拒绝推送；实际状态记录在 `/data/state/<name>/deploy.json`（`success` / `failed`），部署失败时旧进程继续运行。
-- **容器重建后部署还在吗？** 在。裸仓库、工作目录、supervisor 配置、日志都持久化在 `/data`，入口脚本会恢复进程托管。
+- **推送输出 `[AutoDeploy] 错误: ...` 但 push 成功？** post-receive 在对象入库后运行，无法拒绝推送；实际状态看 `/data/state/<name>/deploy.json`。
+- **容器重建后部署还在吗？** 在。裸仓库、工作目录、supervisor 配置、日志、基础环境快照都持久化在 `/data`，入口脚本自动恢复。
+- **应用端口怎么暴露？** `docker-compose` 类型由应用 compose 的 `ports:` 发布；`process` 类型加入外部网络后用 nginx 网关代理，均不需要改 AutoDeploy 自身。
+
+## 开发辅助（Ponytail）
+
+`opencode.json` 已声明 [ponytail](https://github.com/DietrichGebert/ponytail) 插件，opencode 启动时自动安装并按 YAGNI 规则约束代码改动。默认强度 `full`，可用 `/ponytail lite|full|ultra|off` 切换。修改配置后需重启 opencode 生效。
