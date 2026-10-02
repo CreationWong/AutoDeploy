@@ -1,0 +1,79 @@
+#!/bin/bash
+set -uo pipefail
+
+HOOK_ENV="/etc/autodeploy/env"
+if [ -r "$HOOK_ENV" ]; then
+  set -a
+  . "$HOOK_ENV"
+  set +a
+fi
+
+REPO_NAME="${REPO_NAME:-app}"
+DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
+DATA_DIR="${AUTODEPLOY_DATA_DIR:-/data}"
+DEPLOY_ROOT="$DATA_DIR/deploy"
+TARGET="$DEPLOY_ROOT/$REPO_NAME"
+
+log() { echo "[AutoDeploy] $*"; }
+
+branch_matches() {
+  local patterns="$1" branch="$2" pattern
+  [ "$patterns" = "*" ] && return 0
+  IFS=',' read -r -a _patterns <<< "$patterns"
+  for pattern in "${_patterns[@]}"; do
+    case "$branch" in $pattern) return 0 ;; esac
+  done
+  return 1
+}
+
+deploy_ref=""
+deploy_branch=""
+while read -r _oldrev newrev ref; do
+  [ -z "${ref:-}" ] && continue
+  case "$ref" in refs/heads/*) ;; *) continue ;; esac
+  branch="${ref#refs/heads/}"
+  if [ "$newrev" = "0000000000000000000000000000000000000000" ]; then
+    log "分支 $branch 已删除，跳过部署"
+    continue
+  fi
+  if branch_matches "$DEPLOY_BRANCH" "$branch"; then
+    deploy_ref="$newrev"
+    deploy_branch="$branch"
+  else
+    log "分支 $branch 不在部署列表 ($DEPLOY_BRANCH) 中，跳过"
+  fi
+done
+
+if [ -z "$deploy_ref" ]; then
+  log "本次推送没有需要部署的分支，退出"
+  exit 0
+fi
+
+log "开始处理分支 $deploy_branch ($deploy_ref)"
+mkdir -p "$DEPLOY_ROOT"
+staging="$(mktemp -d "$DEPLOY_ROOT/.staging-${REPO_NAME}.XXXXXX")"
+trap 'rm -rf "$staging"' EXIT
+
+if ! git archive "$deploy_ref" | tar -x -C "$staging"; then
+  log "错误: 导出代码失败"
+  exit 1
+fi
+
+if [ ! -f "$staging/$CONFIG_NAME" ]; then
+  log "未在项目根目录找到 $CONFIG_NAME，跳过部署"
+  exit 0
+fi
+
+log "找到 $CONFIG_NAME，开始部署"
+if [ -d "$TARGET" ]; then
+  rm -rf "${TARGET}.old"
+  mv "$TARGET" "${TARGET}.old"
+fi
+mv "$staging" "$TARGET"
+trap - EXIT
+rm -rf "${TARGET}.old"
+
+chown -R git:git "$TARGET"
+
+exec sudo -n /usr/local/bin/autodeploy-deploy "$TARGET" "$deploy_ref" "$deploy_branch"

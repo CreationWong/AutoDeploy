@@ -1,0 +1,524 @@
+#!/bin/bash
+set -euo pipefail
+
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
+DATA_DIR="${AUTODEPLOY_DATA_DIR:-/data}"
+ENV_FILE="/etc/autodeploy/env"
+SUPERVISOR_CONF_DIR="/etc/supervisor/conf.d"
+SUPERVISOR_CTL_CONF="/etc/supervisor/supervisord.conf"
+DEFAULT_PATH="$PATH"
+
+STATE_NAME=""
+STATE_COMMIT=""
+STATE_BRANCH=""
+STATE_TYPE=""
+STATE_DIR=""
+LOG_FILE=""
+CFG=""
+TARGET=""
+
+if [ -r "$ENV_FILE" ]; then
+  set -a
+  . "$ENV_FILE"
+  set +a
+fi
+REPO_NAME="${REPO_NAME:-app}"
+CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
+
+log() {
+  local line="[AutoDeploy] $*"
+  printf '%s\n' "$line"
+  if [ -n "$LOG_FILE" ]; then
+    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$LOG_FILE" 2>/dev/null || true
+  fi
+}
+
+write_status() {
+  local status="$1" message="${2:-}"
+  if [ -z "$STATE_DIR" ]; then
+    return 0
+  fi
+  mkdir -p "$STATE_DIR"
+  if APP_NAME="$STATE_NAME" APP_TYPE="$STATE_TYPE" APP_STATUS="$status" APP_MESSAGE="$message" \
+     APP_COMMIT="$STATE_COMMIT" APP_BRANCH="$STATE_BRANCH" APP_UPDATED_AT="$(date -Iseconds)" \
+     yq -n -o=json -P '
+       .name = strenv(APP_NAME) |
+       .type = strenv(APP_TYPE) |
+       .status = strenv(APP_STATUS) |
+       .message = strenv(APP_MESSAGE) |
+       .commit = strenv(APP_COMMIT) |
+       .branch = strenv(APP_BRANCH) |
+       .updated_at = strenv(APP_UPDATED_AT)
+     ' > "$STATE_DIR/deploy.json.tmp" 2>/dev/null; then
+    mv "$STATE_DIR/deploy.json.tmp" "$STATE_DIR/deploy.json"
+  else
+    rm -f "$STATE_DIR/deploy.json.tmp"
+    log "警告: 写入部署状态失败"
+  fi
+}
+
+die() {
+  local line="[AutoDeploy] 错误: $*"
+  printf '%s\n' "$line" >&2
+  if [ -n "$LOG_FILE" ]; then
+    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$LOG_FILE" 2>/dev/null || true
+  fi
+  write_status "failed" "$*"
+  exit 1
+}
+
+cfg_str() {
+  local expr="$1" default="${2-}" out
+  out="$(yq -r "$expr" "$CFG" 2>/dev/null || true)"
+  if [ -z "$out" ] || [ "$out" = "null" ]; then
+    printf '%s' "$default"
+  else
+    printf '%s' "$out"
+  fi
+}
+
+supervisorctl_log() {
+  local out
+  out="$(supervisorctl -c "$SUPERVISOR_CTL_CONF" "$@" 2>&1 || true)"
+  if [ -n "$out" ]; then
+    log "$out"
+  fi
+  return 0
+}
+
+run_script_as() {
+  local user="$1" desc="$2" script="$3" status=0
+  log "$desc"
+  set +e
+  if [ "$user" = "root" ]; then
+    /bin/bash "$script" 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+  else
+    runuser -u "$user" -- /bin/bash "$script" 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+  fi
+  status=${PIPESTATUS[0]}
+  set -e
+  return "$status"
+}
+
+run_root_command() {
+  local desc="$1" command="$2" script status=0
+  script="$(mktemp)"
+  {
+    printf '#!/bin/bash\nset -e\n'
+    printf 'export PATH=%q\n' "$DEFAULT_PATH"
+    printf 'cd %q\n' "$TARGET"
+    printf 'echo %q\n' "+ $command"
+    printf '%s\n' "$command"
+  } > "$script"
+  chmod 700 "$script"
+  if ! run_script_as root "$desc" "$script"; then
+    status=1
+  fi
+  rm -f "$script"
+  return "$status"
+}
+
+write_env_exports() {
+  local kv key value
+  while IFS= read -r -d '' kv; do
+    key="${kv%%=*}"
+    value="${kv#*=}"
+    if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      die "非法环境变量名: $key"
+    fi
+    printf 'export %s=%q\n' "$key" "$value"
+  done < <(yq -r0 '.env // {} | to_entries | .[] | .key + "=" + (.value | tostring)' "$CFG")
+}
+
+validate_types() {
+  local t
+  yq '.' "$CFG" >/dev/null 2>&1 || die "YAML 解析失败: $CONFIG_NAME"
+  t="$(yq -r '.env | type' "$CFG")"
+  case "$t" in null|'!!null'|'!!map') ;; *) die "env 必须是键值映射" ;; esac
+  local field
+  if [ "$STATE_TYPE" = "docker-compose" ]; then
+    t="$(yq -r '.build | type' "$CFG")"
+    case "$t" in null|'!!null'|'!!bool'|'!!str') ;; *) die "build 必须是布尔值" ;; esac
+  else
+    for field in install build; do
+      t="$(yq -r ".$field | type" "$CFG")"
+      case "$t" in null|'!!null'|'!!seq'|'!!str') ;; *) die "$field 必须是命令字符串列表" ;; esac
+    done
+  fi
+  t="$(yq -r '.environment | type' "$CFG")"
+  case "$t" in null|'!!null'|'!!map') ;; *) die "environment 必须是映射" ;; esac
+  t="$(yq -r '.healthcheck | type' "$CFG")"
+  case "$t" in null|'!!null'|'!!map') ;; *) die "healthcheck 必须是映射" ;; esac
+  t="$(yq -r '.services | type' "$CFG")"
+  case "$t" in null|'!!null'|'!!seq') ;; *) die "services 必须是列表" ;; esac
+}
+
+prepare_environment() {
+  local has_env
+  has_env="$(yq -r '.environment != null' "$CFG")"
+  if [ "$has_env" != "true" ]; then
+    return 0
+  fi
+
+  local snapshot="$STATE_DIR/environment.yml"
+  yq -o=yaml '.environment' "$CFG" > "$snapshot.tmp"
+
+  local new_hash old_hash="" force
+  new_hash="$(sha256sum "$snapshot.tmp" | awk '{print $1}')"
+  if [ -f "$snapshot" ]; then
+    old_hash="$(sha256sum "$snapshot" | awk '{print $1}')"
+  fi
+  force="$(cfg_str '.environment.force' 'false')"
+  if [ "$force" != "true" ] && [ -n "$old_hash" ] && [ "$new_hash" = "$old_hash" ]; then
+    rm -f "$snapshot.tmp"
+    log "基础环境未变化，跳过构建"
+    return 0
+  fi
+
+  log "根据 $CONFIG_NAME 构建基础环境"
+  local -a packages=() missing=() setup_commands=()
+  local item
+  while IFS= read -r -d '' item; do
+    if [ -n "$item" ]; then
+      packages+=("$item")
+    fi
+  done < <(yq -r0 '.environment.packages // [] | .[] | tostring' "$CFG")
+  for item in "${packages[@]}"; do
+    if ! dpkg -s "$item" >/dev/null 2>&1; then
+      missing+=("$item")
+    fi
+  done
+  while IFS= read -r -d '' item; do
+    if [ -n "$item" ]; then
+      setup_commands+=("$item")
+    fi
+  done < <(yq -r0 '.environment.setup // [] | .[] | tostring' "$CFG")
+
+  if [ "${#missing[@]}" -gt 0 ]; then
+    local install_cmd="apt-get install -y --no-install-recommends"
+    for item in "${missing[@]}"; do
+      install_cmd+=" $(printf '%q' "$item")"
+    done
+    if ! run_root_command "安装系统包: ${missing[*]}" \
+      "export DEBIAN_FRONTEND=noninteractive; apt-get update; $install_cmd"; then
+      die "系统包安装失败: ${missing[*]}"
+    fi
+  fi
+
+  for item in "${setup_commands[@]}"; do
+    if ! run_root_command "执行 environment.setup: $item" "$item"; then
+      die "environment.setup 执行失败: $item"
+    fi
+  done
+
+  mv "$snapshot.tmp" "$snapshot"
+  printf '%s\n' "$new_hash" > "$STATE_DIR/environment.sha256"
+  log "基础环境构建完成"
+}
+
+cleanup_previous() {
+  local current="$1" name="$2" prev="" program project
+  if [ -f "$STATE_DIR/deploy.json" ]; then
+    prev="$(yq -r '.type // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
+  fi
+  if [ -z "$prev" ] || [ "$prev" = "$current" ]; then
+    return 0
+  fi
+  program="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_-]/-/g')"
+  if [ "$prev" = "process" ]; then
+    rm -f "$SUPERVISOR_CONF_DIR/$program.conf"
+    supervisorctl_log stop "$program"
+    supervisorctl_log reread
+    supervisorctl_log update
+    log "已停止旧的进程托管服务: $program"
+  elif [ "$prev" = "docker-compose" ]; then
+    project="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g')"
+    log "停止旧的 compose 项目: $project"
+    if ! docker compose -p "$project" down --remove-orphans 2>&1 | tee -a "$LOG_FILE"; then
+      log "警告: 停止旧 compose 项目失败"
+    fi
+  fi
+}
+
+run_phase() {
+  local expr="$1" user="$2" desc="$3" header="$4" cmd script
+  while IFS= read -r -d '' cmd; do
+    script="$STATE_DIR/run.sh"
+    {
+      cat "$header"
+      printf 'echo %q\n' "+ $cmd"
+      printf '%s\n' "$cmd"
+    } > "$script"
+    chown "$user" "$script"
+    chmod 700 "$script"
+    if ! run_script_as "$user" "$desc: $cmd" "$script"; then
+      rm -f "$script"
+      die "$desc 失败: $cmd"
+    fi
+    rm -f "$script"
+  done < <(yq -r0 "$expr // [] | .[] | tostring" "$CFG")
+}
+
+wait_for_program() {
+  local program="$1" timeout="${2:-25}" deadline status
+  deadline=$((SECONDS + timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    status="$(supervisorctl -c "$SUPERVISOR_CTL_CONF" status "$program" 2>&1 || true)"
+    case "$status" in
+      *RUNNING*) return 0 ;;
+      *FATAL*) return 1 ;;
+    esac
+    sleep 1
+  done
+  return 1
+}
+
+deploy_process() {
+  local name="$1" workdir_rel workdir app_user user_home start program
+  local state_dir="$STATE_DIR" header start_sh supervisor_conf
+
+  workdir_rel="$(cfg_str '.workdir' '.')"
+  workdir="$(realpath -m -- "$TARGET/$workdir_rel")"
+  case "$workdir" in
+    "$TARGET"|"$TARGET"/*) ;;
+    *) die "workdir 必须位于项目目录内: $workdir_rel" ;;
+  esac
+  if [ ! -d "$workdir" ]; then
+    die "workdir 不存在: $workdir_rel"
+  fi
+
+  app_user="$(cfg_str '.user' "${AUTODEPLOY_APP_USER:-git}")"
+  if ! id "$app_user" >/dev/null 2>&1; then
+    die "运行用户不存在: $app_user"
+  fi
+  user_home="$(getent passwd "$app_user" | cut -d: -f6)"
+  if [ -z "$user_home" ]; then
+    user_home="/"
+  fi
+
+  start="$(cfg_str '.start' '')"
+  if [ -z "$start" ]; then
+    die "type: process 必须提供 start 命令"
+  fi
+
+  local log_dir="$DATA_DIR/logs/$name"
+  mkdir -p "$state_dir" "$log_dir"
+  chown "$app_user" "$log_dir"
+  chmod 750 "$log_dir"
+
+  header="$state_dir/header.sh"
+  {
+    printf '#!/bin/bash\nset -e\n'
+    printf 'cd %q\n' "$workdir"
+    printf 'export HOME=%q\n' "$user_home"
+    printf 'export PATH=%q\n' "$DEFAULT_PATH"
+    write_env_exports
+  } > "$header"
+  chown "$app_user" "$header"
+  chmod 700 "$header"
+
+  run_phase '.install' "$app_user" "执行 install 命令" "$header"
+  run_phase '.build' "$app_user" "执行 build 命令" "$header"
+
+  start_sh="$state_dir/start.sh"
+  {
+    cat "$header"
+    printf 'exec %s\n' "$start"
+  } > "$start_sh"
+  chown "$app_user" "$start_sh"
+  chmod 700 "$start_sh"
+  rm -f "$header"
+
+  program="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_-]/-/g')"
+  supervisor_conf="$state_dir/supervisor.conf"
+  cat > "$supervisor_conf" <<EOF
+[program:$program]
+command=/bin/bash $start_sh
+directory=$workdir
+user=$app_user
+autostart=true
+autorestart=true
+startsecs=3
+startretries=3
+stopwaitsecs=15
+stopasgroup=true
+killasgroup=true
+environment=HOME="$user_home",PATH="$DEFAULT_PATH"
+stdout_logfile=$log_dir/app.log
+stderr_logfile=$log_dir/app.err.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=2
+stderr_logfile_maxbytes=10MB
+stderr_logfile_backups=2
+EOF
+
+  mkdir -p "$SUPERVISOR_CONF_DIR"
+  ln -sfn "$supervisor_conf" "$SUPERVISOR_CONF_DIR/$program.conf"
+  supervisorctl_log reread
+  supervisorctl_log update
+  supervisorctl_log restart "$program"
+
+  if ! wait_for_program "$program"; then
+    local status_out
+    status_out="$(supervisorctl -c "$SUPERVISOR_CTL_CONF" status "$program" 2>&1 || true)"
+    die "进程未成功运行: $program
+$status_out"
+  fi
+  log "进程已托管: $program (user=$app_user)"
+}
+
+deploy_compose() {
+  local name="$1" file candidate path project env_file kv svc
+  file="$(cfg_str '.file' '')"
+  if [ -z "$file" ]; then
+    for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+      if [ -f "$TARGET/$candidate" ]; then
+        file="$candidate"
+        break
+      fi
+    done
+  fi
+  if [ -z "$file" ] || [ ! -f "$TARGET/$file" ]; then
+    die "未找到 compose 文件（可通过 file 指定）"
+  fi
+  path="$(realpath -m -- "$TARGET/$file")"
+  case "$path" in
+    "$TARGET"/*) ;;
+    *) die "compose 文件必须位于项目目录内: $file" ;;
+  esac
+  if ! command -v docker >/dev/null 2>&1; then
+    die "docker CLI 不可用，请以 INSTALL_DOCKER_CLI=1 构建镜像并挂载 /var/run/docker.sock"
+  fi
+
+  project="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g')"
+  local -a args=(docker compose -f "$path" -p "$project")
+
+  env_file="$STATE_DIR/compose.env"
+  if [ "$(yq -r '.env // {} | length > 0' "$CFG")" = "true" ]; then
+    : > "$env_file"
+    while IFS= read -r -d '' kv; do
+      printf '%s\n' "$kv" >> "$env_file"
+    done < <(yq -r0 '.env // {} | to_entries | .[] | .key + "=" + (.value | tostring)' "$CFG")
+    args+=(--env-file "$env_file")
+  fi
+
+  args+=(up -d)
+  if [ "$(cfg_str '.build' 'true')" = "true" ]; then
+    args+=(--build)
+  fi
+  while IFS= read -r -d '' svc; do
+    if [ -n "$svc" ]; then
+      args+=("$svc")
+    fi
+  done < <(yq -r0 '.services // [] | .[] | tostring' "$CFG")
+
+  log "启动 docker compose 服务 (project=$project)"
+  if ! "${args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
+    die "docker compose 启动失败"
+  fi
+}
+
+health_check() {
+  if [ "$(yq -r '.healthcheck != null' "$CFG")" != "true" ]; then
+    return 0
+  fi
+  local url timeout port deadline
+  url="$(cfg_str '.healthcheck.url' '')"
+  if [ -z "$url" ]; then
+    port="$(cfg_str '.healthcheck.port' '')"
+    if [ -n "$port" ]; then
+      url="http://127.0.0.1:$port/"
+    fi
+  fi
+  if [ -z "$url" ]; then
+    die "healthcheck 需要 url 或 port"
+  fi
+  timeout="$(cfg_str '.healthcheck.timeout' '30')"
+  case "$timeout" in
+    ''|*[!0-9]*) die "healthcheck.timeout 必须是整数" ;;
+  esac
+  log "等待健康检查: $url (最长 ${timeout}s)"
+  deadline=$((SECONDS + timeout))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if curl -fsS -o /dev/null --max-time 3 "$url"; then
+      log "健康检查通过"
+      return 0
+    fi
+    sleep 2
+  done
+  die "健康检查失败: $url"
+}
+
+main() {
+  if [ "$(id -u)" != "0" ]; then
+    printf '[AutoDeploy] 错误: 必须以 root 运行（post-receive 通过 sudo 调用）\n' >&2
+    exit 1
+  fi
+  if [ "$#" -lt 1 ]; then
+    printf '用法: autodeploy-deploy <项目目录> [commit] [branch]\n' >&2
+    exit 1
+  fi
+
+  TARGET="$(realpath -m -- "$1")"
+  STATE_COMMIT="${2:-}"
+  STATE_BRANCH="${3:-}"
+
+  local deploy_root
+  deploy_root="$(realpath -m -- "$DATA_DIR/deploy")"
+  case "$TARGET" in
+    "$deploy_root"|"$deploy_root"/*) ;;
+    *) die "拒绝部署: 目录必须位于 $deploy_root 下" ;;
+  esac
+
+  CFG="$TARGET/$CONFIG_NAME"
+  if [ ! -f "$CFG" ]; then
+    log "未找到 $CONFIG_NAME，跳过部署"
+    return 0
+  fi
+
+  if ! command -v yq >/dev/null 2>&1; then
+    die "未找到 yq，请使用本仓库 Dockerfile 重新构建镜像"
+  fi
+
+  local version
+  version="$(cfg_str '.version' '1')"
+  if [ "$version" != "1" ]; then
+    die "不支持的 version: $version（当前仅支持 1）"
+  fi
+
+  STATE_TYPE="$(cfg_str '.type' 'process')"
+  validate_types
+
+  local name
+  name="$(cfg_str '.name' "$REPO_NAME")"
+  if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    die "name 只能包含字母、数字、下划线、点和连字符，且以字母或数字开头: $name"
+  fi
+  STATE_NAME="$name"
+
+  STATE_DIR="$DATA_DIR/state/$name"
+  local log_dir="$DATA_DIR/logs/$name"
+  mkdir -p "$STATE_DIR" "$log_dir"
+  LOG_FILE="$log_dir/deploy.log"
+
+  local short_commit="${STATE_COMMIT:0:12}"
+  log "部署项目: $name (type=$STATE_TYPE, commit=${short_commit:--}, branch=${STATE_BRANCH:--})"
+  write_status "deploying"
+
+  prepare_environment
+  cleanup_previous "$STATE_TYPE" "$name"
+
+  case "$STATE_TYPE" in
+    process) deploy_process "$name" ;;
+    docker-compose) deploy_compose "$name" ;;
+    *) die "不支持的 type: $STATE_TYPE（可选 process / docker-compose）" ;;
+  esac
+
+  health_check
+  write_status "success"
+  log "部署完成: $name ($STATE_TYPE)"
+}
+
+main "$@"
