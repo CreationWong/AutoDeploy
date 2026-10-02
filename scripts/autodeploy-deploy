@@ -169,13 +169,18 @@ prepare_environment() {
   local snapshot="$STATE_DIR/environment.yml"
   yq -o=yaml '.environment' "$CFG" > "$snapshot.tmp"
 
-  local new_hash old_hash="" force
+  local new_hash old_hash="" force boot_id boot_file same_instance=0
   new_hash="$(sha256sum "$snapshot.tmp" | awk '{print $1}')"
   if [ -f "$snapshot" ]; then
     old_hash="$(sha256sum "$snapshot" | awk '{print $1}')"
   fi
+  boot_id="$(hostname)"
+  boot_file="$STATE_DIR/environment.boot"
+  if [ -f "$boot_file" ] && [ "$(cat "$boot_file")" = "$boot_id" ]; then
+    same_instance=1
+  fi
   force="$(cfg_str '.environment.force' 'false')"
-  if [ "$force" != "true" ] && [ -n "$old_hash" ] && [ "$new_hash" = "$old_hash" ]; then
+  if [ "$force" != "true" ] && [ "$same_instance" = "1" ] && [ -n "$old_hash" ] && [ "$new_hash" = "$old_hash" ]; then
     rm -f "$snapshot.tmp"
     log "基础环境未变化，跳过构建"
     return 0
@@ -218,8 +223,35 @@ prepare_environment() {
   done
 
   mv "$snapshot.tmp" "$snapshot"
-  printf '%s\n' "$new_hash" > "$STATE_DIR/environment.sha256"
+  printf '%s\n' "$boot_id" > "$STATE_DIR/environment.boot"
   log "基础环境构建完成"
+}
+
+restore_environment() {
+  local target="${1:-}"
+  if [ -z "$target" ]; then
+    printf '用法: autodeploy-deploy --prepare-env <项目目录>\n' >&2
+    return 1
+  fi
+  TARGET="$(realpath -m -- "$target")"
+  CFG="$TARGET/$CONFIG_NAME"
+  if [ ! -f "$CFG" ]; then
+    return 0
+  fi
+  if ! command -v yq >/dev/null 2>&1; then
+    return 0
+  fi
+  STATE_TYPE="$(cfg_str '.type' 'process')"
+  validate_types
+  STATE_NAME="$(cfg_str '.name' "$REPO_NAME")"
+  if ! [[ "$STATE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+    printf '[AutoDeploy] 警告: 应用名非法，跳过基础环境恢复: %s\n' "$STATE_NAME" >&2
+    return 0
+  fi
+  STATE_DIR="$DATA_DIR/state/$STATE_NAME"
+  mkdir -p "$STATE_DIR" "$DATA_DIR/logs/$STATE_NAME"
+  LOG_FILE="$DATA_DIR/logs/$STATE_NAME/deploy.log"
+  prepare_environment
 }
 
 run_project_hook() {
@@ -440,6 +472,7 @@ cleanup_previous() {
   program="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_-]/-/g')"
   if [ "$prev" = "process" ]; then
     rm -f "$SUPERVISOR_CONF_DIR/$program.conf"
+    rm -f "$STATE_DIR/supervisor.conf" "$STATE_DIR/start.sh" "$STATE_DIR/header.sh" "$STATE_DIR/run.sh"
     supervisorctl_log stop "$program"
     supervisorctl_log reread
     supervisorctl_log update
@@ -670,6 +703,11 @@ main() {
   if [ "$#" -lt 1 ]; then
     printf '用法: autodeploy-deploy <项目目录> [commit] [branch]\n' >&2
     exit 1
+  fi
+  if [ "$1" = "--prepare-env" ]; then
+    shift
+    restore_environment "${1:-}"
+    return 0
   fi
 
   TARGET="$(realpath -m -- "$1")"

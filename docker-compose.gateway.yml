@@ -1,0 +1,11 @@
+services:
+  autodeploy:
+    ports: !reset []
+    networks:
+      - default
+      - gateway
+
+networks:
+  gateway:
+    external: true
+    name: ${AUTODEPLOY_NETWORK:-autodeploy-gateway}

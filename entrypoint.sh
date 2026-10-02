@@ -90,11 +90,18 @@ ln -sf /usr/local/bin/autodeploy-post-receive "$REPO_DIR/hooks/post-receive"
 chown -R "$SSH_USER:$SSH_USER" "$REPO_DIR"
 
 find /etc/supervisor/conf.d -maxdepth 1 -name 'autodeploy-*.conf' -delete
+RESTORE_ENV=0
 for app_conf in "$DATA_DIR"/state/*/supervisor.conf; do
   [ -e "$app_conf" ] || continue
   app_name="$(basename "$(dirname "$app_conf")")"
   ln -sf "$app_conf" "/etc/supervisor/conf.d/autodeploy-${app_name}.conf"
+  RESTORE_ENV=1
 done
+if [ "$RESTORE_ENV" = "1" ] && [ -f "$DATA_DIR/deploy/${REPO_NAME}/${CONFIG_NAME}" ]; then
+  if ! /usr/local/bin/autodeploy-deploy --prepare-env "$DATA_DIR/deploy/${REPO_NAME}"; then
+    warn "基础环境恢复失败，应用可能无法启动"
+  fi
+fi
 
 SSH_PORT="${AUTODEPLOY_SSH_PORT:-2222}"
 HTTP_PORT="${AUTODEPLOY_HTTP_PORT:-8080}"
