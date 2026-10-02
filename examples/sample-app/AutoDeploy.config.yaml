@@ -1,0 +1,12 @@
+version: 1
+name: sample-app
+type: process
+environment:
+  packages:
+    - python3
+env:
+  PORT: "3000"
+start: python3 server.py
+healthcheck:
+  url: http://127.0.0.1:3000/
+  timeout: 20

@@ -1,0 +1,9 @@
+version: 1
+name: compose-app
+type: docker-compose
+file: docker-compose.yml
+build: true
+services:
+  - web
+env:
+  APP_PORT: "8081"
