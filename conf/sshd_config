@@ -1,0 +1,30 @@
+Port 22
+AddressFamily any
+ListenAddress 0.0.0.0
+
+HostKey /data/ssh/ssh_host_ed25519_key
+HostKey /data/ssh/ssh_host_rsa_key
+
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM yes
+
+AllowUsers git
+AuthorizedKeysFile /data/git-home/.ssh/authorized_keys
+StrictModes yes
+
+X11Forwarding no
+AllowAgentForwarding no
+AllowTcpForwarding no
+PermitTunnel no
+GatewayPorts no
+
+PrintMotd no
+PrintLastLog yes
+AcceptEnv LANG LC_*
+
+ClientAliveInterval 60
+ClientAliveCountMax 3

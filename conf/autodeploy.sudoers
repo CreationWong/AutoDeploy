@@ -1,0 +1,2 @@
+Defaults:git !requiretty
+git ALL=(root) NOPASSWD: /usr/local/bin/autodeploy-deploy

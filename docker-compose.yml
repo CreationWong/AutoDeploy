@@ -1,0 +1,28 @@
+services:
+  autodeploy:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-debian:bookworm-slim}
+        INSTALL_DOCKER_CLI: ${INSTALL_DOCKER_CLI:-1}
+    image: autodeploy:latest
+    container_name: autodeploy
+    restart: unless-stopped
+    ports:
+      - "2222:22"
+      - "8080:80"
+    volumes:
+      - autodeploy-data:/data
+      # docker-compose 类型部署需要挂载宿主机 docker.sock
+      # - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      REPO_NAME: ${REPO_NAME:-app}
+      DEPLOY_BRANCH: ${DEPLOY_BRANCH:-main}
+      AUTODEPLOY_HTTP_USER: ${AUTODEPLOY_HTTP_USER:-autodeploy}
+      # 留空则首次启动随机生成密码并打印到容器日志
+      AUTODEPLOY_HTTP_PASSWORD: ${AUTODEPLOY_HTTP_PASSWORD:-}
+      AUTHORIZED_KEYS: ${AUTHORIZED_KEYS:-}
+      AUTODEPLOY_CONFIG_NAME: ${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}
+
+volumes:
+  autodeploy-data:
