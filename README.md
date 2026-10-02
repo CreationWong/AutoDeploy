@@ -33,6 +33,8 @@ git push (SSH:2222 / HTTP:8080)
 
 ## 快速开始
 
+### 方式一：docker compose（推荐）
+
 ```bash
 # 1. 构建并启动 AutoDeploy 容器
 AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" docker compose up -d --build
@@ -51,18 +53,50 @@ docker exec autodeploy supervisorctl status
 docker exec autodeploy curl -s http://127.0.0.1:3000/
 ```
 
+### 方式二：docker run
+
+```bash
+docker build -t autodeploy:latest .
+
+docker run -d --name autodeploy --restart unless-stopped \
+  -p 2222:22 -p 8080:80 \
+  -v autodeploy-data:/data \
+  -e AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
+  -e AUTODEPLOY_HTTP_USER=autodeploy \
+  -e AUTODEPLOY_HTTP_PASSWORD= \
+  -e AUTODEPLOY_SSH_PORT=2222 \
+  -e AUTODEPLOY_HTTP_PORT=8080 \
+  autodeploy:latest
+```
+
+> 部署 `type: docker-compose` 的项目时，需追加 `-v /var/run/docker.sock:/var/run/docker.sock`。
+
+### 推送与端口
+
 HTTP 推送：
 
 ```bash
 git push http://autodeploy:<密码>@localhost:8080/app.git main
 ```
 
+宿主端口可自行指定（容器内部固定监听 22/80）：compose 用环境变量，docker run 直接改 `-p`（同时设置 `AUTODEPLOY_SSH_PORT` / `AUTODEPLOY_HTTP_PORT` 只影响启动日志提示）：
+
+```bash
+# compose
+AUTODEPLOY_SSH_PORT=22022 AUTODEPLOY_HTTP_PORT=18080 docker compose up -d
+
+# docker run
+docker run -d --name autodeploy -p 22022:22 -p 18080:80 \
+  -e AUTODEPLOY_SSH_PORT=22022 -e AUTODEPLOY_HTTP_PORT=18080 \
+  -v autodeploy-data:/data autodeploy:latest
+```
+
 ## 推送地址
 
 | 协议 | 地址 | 认证 |
 | --- | --- | --- |
-| SSH | `ssh://git@<host>:2222/~/app.git` | `AUTHORIZED_KEYS` 环境变量或 `/data/authorized_keys` 挂载文件 |
-| HTTP | `http://<user>@<host>:8080/app.git` | `AUTODEPLOY_HTTP_USER` / `AUTODEPLOY_HTTP_PASSWORD`，或首次启动随机生成并打印 |
+| SSH | `ssh://git@<host>:<SSH_PORT>/~/app.git`（默认 2222） | `AUTHORIZED_KEYS` 环境变量或 `/data/authorized_keys` 挂载文件 |
+| HTTP | `http://<user>@<host>:<HTTP_PORT>/app.git`（默认 8080） | `AUTODEPLOY_HTTP_USER` / `AUTODEPLOY_HTTP_PASSWORD`，或首次启动随机生成并打印 |
 
 裸仓库固定为 `${REPO_NAME}.git`（默认 `app.git`）。默认只有 `DEPLOY_BRANCH` 匹配的分支触发部署，支持逗号分隔或通配符（如 `main,release/*` 或 `*`）。
 
@@ -159,10 +193,64 @@ env:
 
 > compose 容器运行在宿主机 Docker 上，不是 AutoDeploy 容器内部。需要在 `docker-compose.yml` 中取消注释 `/var/run/docker.sock` 挂载。
 
+## .AutoDeploy 自定义脚本（部署前 CI/CD）
+
+项目根目录可创建 `.AutoDeploy/` 目录放置钩子脚本，按部署生命周期自动执行：
+
+| 脚本 | 执行时机 |
+| --- | --- |
+| `.AutoDeploy/before.sh` | `environment` 构建完成后、正式部署（install/build/start）之前；失败则中止部署 |
+| `.AutoDeploy/after.sh` | 健康检查通过后；失败则本次部署标记为 `failed` |
+
+- 以 root 执行，工作目录为项目根，脚本随 `git archive` 推送；
+- 自动注入配置里的 `env`，以及 `AUTODEPLOY_NAME`、`AUTODEPLOY_TYPE`、`AUTODEPLOY_COMMIT`、`AUTODEPLOY_BRANCH`、`AUTODEPLOY_PROJECT_DIR`；
+- 常见用法：跑测试/代码检查、发通知、数据库迁移、清理缓存；
+- 无论是否可执行都会用 bash 运行。
+
+```bash
+# .AutoDeploy/before.sh
+#!/bin/bash
+set -e
+npm ci && npm test
+
+# .AutoDeploy/after.sh
+#!/bin/bash
+set -e
+curl -fsS -X POST "https://hooks.example.com/deploy?name=${AUTODEPLOY_NAME}&commit=${AUTODEPLOY_COMMIT}"
+```
+
+### GitHub Actions 风格 workflow
+
+`.AutoDeploy/workflows/*.yml`（或 `.yaml`）按 GitHub Actions 语法执行，时机在 `before.sh` 之后、正式部署之前，按文件名顺序：
+
+```yaml
+name: ci
+on: [push]
+env:
+  PYTHONUNBUFFERED: "1"
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 跑测试
+        working-directory: .
+        run: |
+          pip install -r requirements.txt
+          pytest -q
+```
+
+- 支持：`jobs`（按定义顺序）、`steps`、`run`（含多行）、`name`、workflow/job/step 三级 `env`（就近覆盖）、`working-directory`、`defaults.run.shell` / `defaults.run.working-directory`、`continue-on-error`、`actions/checkout`（跳过，代码已检出）、`GITHUB_ENV` 跨步骤传递变量；
+- 自动注入：`CI=true`、`GITHUB_WORKSPACE`、`GITHUB_SHA`、`GITHUB_REF_NAME`、`AUTODEPLOY_*`；
+- 不支持：`uses`（除 actions/checkout）、`strategy/matrix`、`services`、`container`（报错中止）；`if`、`needs` 忽略并警告；`on`、`runs-on` 仅兼容忽略；
+- 步骤以 root 执行，部署前会把工作目录交还给 `git` 用户。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
+| `AUTODEPLOY_SSH_PORT` | `2222` | 宿主机映射的 SSH 端口（docker compose 变量，容器内固定 22） |
+| `AUTODEPLOY_HTTP_PORT` | `8080` | 宿主机映射的 HTTP 端口（docker compose 变量，容器内固定 80） |
 | `REPO_NAME` | `app` | 裸仓库名（`${REPO_NAME}.git`），也作为默认应用名 |
 | `DEPLOY_BRANCH` | `main` | 触发部署的分支，支持逗号分隔和 `*` 通配 |
 | `AUTODEPLOY_CONFIG_NAME` | `AutoDeploy.config.yaml` | 部署配置文件名 |
