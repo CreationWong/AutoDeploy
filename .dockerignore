@@ -1,6 +1,9 @@
 .git
 .gitignore
+AGENTS.md
 examples
+opencode.json
 README.md
 docker-compose.yml
+docker-compose.gateway.yml
 *.log
