@@ -20,7 +20,11 @@ CFG=""
 TARGET=""
 RUN_DIR=""
 PREV_BACKUP=""
+PREV_COMMIT=""
+PREV_BRANCH=""
+PREV_TYPE=""
 ROLLING_BACK=0
+START_FAILURE=""
 
 if [ -r "$ENV_FILE" ]; then
   set -a
@@ -33,6 +37,14 @@ CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
 log() {
   local line="[AutoDeploy] $*"
   printf '%s\n' "$line"
+  if [ -n "$LOG_FILE" ]; then
+    printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$LOG_FILE" 2>/dev/null || true
+  fi
+}
+
+warn() {
+  local line="[AutoDeploy] 警告: $*"
+  printf '%s\n' "$line" >&2
   if [ -n "$LOG_FILE" ]; then
     printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$LOG_FILE" 2>/dev/null || true
   fi
@@ -95,6 +107,7 @@ die() {
   if [ -n "$LOG_FILE" ]; then
     printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$LOG_FILE" 2>/dev/null || true
   fi
+  FAILED_COMMIT="${STATE_COMMIT:-}"
   write_status "failed" "$*"
   if [ "$ROLLING_BACK" != "1" ]; then
     mark_failed "$STATE_COMMIT" "$STATE_BRANCH" "$*" "false"
@@ -113,13 +126,20 @@ cfg_str() {
 }
 
 yq_list() {
-  yq -r0 "($1 // []) | (if tag == \"!!seq\" then .[] else . end) | tostring" "$2"
+  yq -r0 "($1 // []) | [.] | flatten | .[] | tostring" "$2"
+}
+
+cleanup_run_dir() {
+  rm -rf "$RUN_DIR"
+  if [ -n "${TARGET:-}" ]; then
+    rm -rf "${TARGET}.old"
+  fi
 }
 
 setup_run_dir() {
   RUN_DIR="$(mktemp -d "$STATE_DIR/.run.XXXXXX")"
   chmod 755 "$RUN_DIR"
-  trap 'rm -rf "$RUN_DIR"' EXIT
+  trap cleanup_run_dir EXIT
 }
 
 supervisorctl_log() {
@@ -509,10 +529,7 @@ run_workflow_job() {
 }
 
 cleanup_previous() {
-  local current="$1" name="$2" prev="" program project cf candidate
-  if [ -f "$STATE_DIR/deploy.json" ]; then
-    prev="$(yq -r '.type // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
-  fi
+  local current="$1" name="$2" prev="$PREV_TYPE" program project cf candidate
   if [ -z "$prev" ] || [ "$prev" = "$current" ]; then
     return 0
   fi
@@ -562,7 +579,8 @@ run_phase() {
     chmod 700 "$script"
     if ! run_script_as "$user" "$desc: $cmd" "$script"; then
       rm -f "$script"
-      die "$desc 失败: $cmd"
+      log "$desc 失败: $cmd"
+      return 1
     fi
     rm -f "$script"
   done < <(yq_list "$expr" "$CFG")
@@ -590,15 +608,17 @@ deploy_process() {
   workdir="$(realpath -m -- "$TARGET/$workdir_rel" 2>/dev/null || printf '%s' "$TARGET/$workdir_rel")"
   case "$workdir" in
     "$TARGET"|"$TARGET"/*) ;;
-    *) die "workdir 必须位于项目目录内: $workdir_rel" ;;
+    *) log "错误: workdir 必须位于项目目录内: $workdir_rel"; return 1 ;;
   esac
   if [ ! -d "$workdir" ]; then
-    die "workdir 不存在: $workdir_rel"
+    log "错误: workdir 不存在: $workdir_rel"
+    return 1
   fi
 
   app_user="$(cfg_str '.user' "${AUTODEPLOY_APP_USER:-git}")"
   if ! id "$app_user" >/dev/null 2>&1; then
-    die "运行用户不存在: $app_user"
+    log "错误: 运行用户不存在: $app_user"
+    return 1
   fi
   user_home="$(getent passwd "$app_user" | cut -d: -f6)"
   if [ -z "$user_home" ]; then
@@ -607,7 +627,8 @@ deploy_process() {
 
   start="$(cfg_str '.start' '')"
   if [ -z "$start" ]; then
-    die "type: process 必须提供 start 命令"
+    log "错误: type: process 必须提供 start 命令"
+    return 1
   fi
 
   local log_dir="$DATA_DIR/logs/$name"
@@ -626,8 +647,8 @@ deploy_process() {
   chown "$app_user" "$header"
   chmod 700 "$header"
 
-  run_phase '.install' "$app_user" "执行 install 命令" "$header"
-  run_phase '.build' "$app_user" "执行 build 命令" "$header"
+  run_phase '.install' "$app_user" "执行 install 命令" "$header" || return 1
+  run_phase '.build' "$app_user" "执行 build 命令" "$header" || return 1
 
   start_sh="$state_dir/start.sh"
   {
@@ -670,8 +691,9 @@ EOF
   if ! wait_for_program "$program"; then
     local status_out
     status_out="$(supervisorctl -c "$SUPERVISOR_CTL_CONF" status "$program" 2>&1 || true)"
-    die "进程未成功运行: $program
+    log "错误: 进程未成功运行: $program
 $status_out"
+    return 1
   fi
   log "进程已托管: $program (user=$app_user)"
 }
@@ -688,15 +710,17 @@ deploy_compose() {
     done
   fi
   if [ -z "$file" ] || [ ! -f "$TARGET/$file" ]; then
-    die "未找到 compose 文件（可通过 file 指定）"
+    log "错误: 未找到 compose 文件（可通过 file 指定）"
+    return 1
   fi
   path="$(realpath -m -- "$TARGET/$file")"
   case "$path" in
     "$TARGET"/*) ;;
-    *) die "compose 文件必须位于项目目录内: $file" ;;
+    *) log "错误: compose 文件必须位于项目目录内: $file"; return 1 ;;
   esac
   if ! command -v docker >/dev/null 2>&1; then
-    die "docker CLI 不可用，请以 INSTALL_DOCKER_CLI=1 构建镜像并挂载 /var/run/docker.sock"
+    log "错误: docker CLI 不可用，请以 INSTALL_DOCKER_CLI=1 构建镜像并挂载 /var/run/docker.sock"
+    return 1
   fi
 
   project="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g')"
@@ -723,7 +747,8 @@ deploy_compose() {
 
   log "启动 docker compose 服务 (project=$project)"
   if ! "${args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
-    die "docker compose 启动失败"
+    log "错误: docker compose 启动失败"
+    return 1
   fi
 }
 
@@ -740,11 +765,12 @@ health_check() {
     fi
   fi
   if [ -z "$url" ]; then
-    die "healthcheck 需要 url 或 port"
+    log "错误: healthcheck 需要 url 或 port"
+    return 1
   fi
   timeout="$(cfg_str '.healthcheck.timeout' '30')"
   case "$timeout" in
-    ''|*[!0-9]*) die "healthcheck.timeout 必须是整数" ;;
+    ''|*[!0-9]*) log "错误: healthcheck.timeout 必须是整数"; return 1 ;;
   esac
   log "等待健康检查: $url (最长 ${timeout}s)"
   deadline=$((SECONDS + timeout))
@@ -755,7 +781,30 @@ health_check() {
     fi
     sleep 2
   done
-  die "健康检查失败: $url"
+  log "错误: 健康检查失败: $url"
+  return 1
+}
+
+start_service() {
+  case "$STATE_TYPE" in
+    process)
+      if ! deploy_process "$STATE_NAME"; then
+        START_FAILURE="进程启动失败"
+        return 1
+      fi
+      ;;
+    docker-compose)
+      if ! deploy_compose "$STATE_NAME"; then
+        START_FAILURE="compose 启动失败"
+        return 1
+      fi
+      ;;
+    *)
+      START_FAILURE="不支持的 type: $STATE_TYPE（可选 process / docker-compose）"
+      return 1
+      ;;
+  esac
+  return 0
 }
 
 main() {
@@ -815,7 +864,6 @@ main() {
   mkdir -p "$STATE_DIR" "$log_dir"
   LOG_FILE="$log_dir/deploy.log"
   setup_run_dir
-  PREV_BACKUP="$RUN_DIR/prev"
 
   backup_previous
 
@@ -835,19 +883,9 @@ main() {
   cleanup_previous "$STATE_TYPE" "$name"
 
   deploy_failed=""
-  case "$STATE_TYPE" in
-    process)
-      if ! deploy_process "$name"; then
-        deploy_failed="进程启动失败"
-      fi
-      ;;
-    docker-compose)
-      if ! deploy_compose "$name"; then
-        deploy_failed="compose 启动失败"
-      fi
-      ;;
-    *) die "不支持的 type: $STATE_TYPE（可选 process / docker-compose）" ;;
-  esac
+  if ! start_service; then
+    deploy_failed="$START_FAILURE"
+  fi
 
   if [ -z "$deploy_failed" ] && ! health_check; then
     deploy_failed="健康检查未通过"
@@ -858,44 +896,59 @@ main() {
   fi
 
   if [ -n "$deploy_failed" ]; then
+    local failed_commit="$STATE_COMMIT" failed_branch="$STATE_BRANCH"
     log "部署失败: $deploy_failed"
     mark_failed "$STATE_COMMIT" "$STATE_BRANCH" "$deploy_failed" "false"
-    if ! rollback_if_possible; then
+    if ! rollback_if_possible "$deploy_failed"; then
+      STATE_COMMIT="$failed_commit"
+      STATE_BRANCH="$failed_branch"
+      FAILED_COMMIT="$failed_commit"
+      write_status "failed" "$deploy_failed"
       log "已停止部署，未回退；当前提交已标记为失败"
       exit 1
     fi
   fi
 
   chown -R git:git "$TARGET" 2>/dev/null || true
-  write_status "success"
+  if [ "$ROLLING_BACK" != "1" ]; then
+    write_status "success"
+  fi
   log "部署完成: $name ($STATE_TYPE)"
 }
 
 backup_previous() {
-  local prev_commit
+  local status prev_commit old_dir
+  PREV_COMMIT=""
+  PREV_BRANCH=""
+  PREV_TYPE=""
+  PREV_BACKUP=""
   if [ ! -f "$STATE_DIR/deploy.json" ]; then
     return 0
   fi
-  if [ "$(yq -r '.status // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)" != "success" ]; then
+  PREV_TYPE="$(yq -r '.type // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
+  status="$(yq -r '.status // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
+  if [ "$status" != "success" ]; then
     return 0
   fi
   prev_commit="$(yq -r '.commit // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
   if [ -z "$prev_commit" ] || [ "$prev_commit" = "$STATE_COMMIT" ]; then
     return 0
   fi
-  rm -rf "$PREV_BACKUP" 2>/dev/null || true
-  if cp -a "$TARGET" "$PREV_BACKUP"; then
-    log "已记录上一可用版本: ${prev_commit:0:12}"
-  else
-    rm -rf "$PREV_BACKUP" 2>/dev/null || true
-    warn "备份上一版本失败，失败时将无法自动回退"
+  old_dir="${TARGET}.old"
+  if [ ! -d "$old_dir" ]; then
+    warn "未找到上一版本目录 ${old_dir}，失败时将无法自动回退"
+    return 0
   fi
+  PREV_COMMIT="$prev_commit"
+  PREV_BRANCH="$(yq -r '.branch // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
+  PREV_BACKUP="$old_dir"
+  log "已记录上一可用版本: ${prev_commit:0:12}"
 }
 
 deploy_previous_version() {
   local commit="$1"
   rm -rf "$TARGET"
-  if cp -a "$PREV_BACKUP" "$TARGET"; then
+  if mv "$PREV_BACKUP" "$TARGET" 2>/dev/null; then
     log "已回退到上一可用版本: ${commit:0:12}"
   else
     log "警告: 回退到上一版本失败"
@@ -904,29 +957,34 @@ deploy_previous_version() {
 }
 
 rollback_if_possible() {
-  local prev_commit
-  prev_commit="$(yq -r '.commit // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
-  if [ -d "$PREV_BACKUP" ] && [ -n "$prev_commit" ]; then
-    log "部署失败，自动回退到上一可用版本: ${prev_commit:0:12}"
+  local failure="${1:-部署失败}" failed_commit="$STATE_COMMIT" failed_branch="$STATE_BRANCH"
+  if [ -n "$PREV_COMMIT" ] && [ -d "$PREV_BACKUP" ]; then
+    log "部署失败，自动回退到上一可用版本: ${PREV_COMMIT:0:12}"
     ROLLING_BACK=1
-    STATE_COMMIT="$prev_commit"
-    STATE_BRANCH="$(yq -r '.branch // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
-    deploy_previous_version "$prev_commit"
-    if deploy_process "$STATE_NAME"; then
-      FAILED_COMMIT="$prev_commit"
-      write_status "success" "已回退到 ${prev_commit:0:12}"
-      log "回退完成，服务运行于上一可用版本: ${prev_commit:0:12}"
+    STATE_COMMIT="$PREV_COMMIT"
+    STATE_BRANCH="$PREV_BRANCH"
+    deploy_previous_version "$PREV_COMMIT"
+    STATE_TYPE="$(cfg_str '.type' 'process')"
+    if start_service; then
+      FAILED_COMMIT="$failed_commit"
+      mark_failed "$failed_commit" "$failed_branch" "$failure" "true"
+      write_status "success" "已回退到 ${PREV_COMMIT:0:12}"
+      log "回退完成，服务运行于上一可用版本: ${PREV_COMMIT:0:12}"
       return 0
     fi
     FAILED_COMMIT=""
     log "警告: 回退版本未能启动，服务可能不可用"
     return 1
   fi
-  if [ -z "$prev_commit" ]; then
-    log "没有可用的上一版本，停止部署"
-    rm -rf "$TARGET"
-    log "已移除失败的部署目录: $TARGET"
+  log "没有可用的上一版本，停止部署"
+  if [ "$STATE_TYPE" = "docker-compose" ] && [ -d "$TARGET" ]; then
+    local project="autodeploy-$(printf '%s' "$STATE_NAME" | sed 's/[^A-Za-z0-9_.-]/-/g')"
+    if ! (cd "$TARGET" && docker compose -p "$project" down --remove-orphans) 2>&1 | tee -a "$LOG_FILE"; then
+      log "警告: 停止失败的 compose 服务失败"
+    fi
   fi
+  rm -rf "$TARGET"
+  log "已移除失败的部署目录: $TARGET"
   return 1
 }
 

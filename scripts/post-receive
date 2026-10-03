@@ -41,7 +41,7 @@ read_trigger() {
     printf '%s' "$default"
     return 0
   fi
-  out="$(printf '%s' "$cfg" | yq -r ".deploy.$field // [] | if tag == \"!!seq\" then join(\",\") else tostring end" 2>/dev/null || true)"
+  out="$(printf '%s' "$cfg" | yq -r ".deploy.$field // [] | [.] | flatten | join(\",\")" 2>/dev/null || true)"
   if [ -z "$out" ]; then
     printf '%s' "$default"
     return 0
@@ -176,8 +176,6 @@ if [ -d "$TARGET" ]; then
 fi
 mv "$staging" "$TARGET"
 trap - EXIT
-rm -rf "${TARGET}.old"
-
 chown -R git:git "$TARGET"
 
 exec sudo -n /usr/local/bin/autodeploy-deploy "$TARGET" "$deploy_ref" "$deploy_branch"
