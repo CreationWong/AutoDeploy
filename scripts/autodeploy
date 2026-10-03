@@ -65,7 +65,7 @@ cmd_show() {
   echo
 
   echo "部署状态:"
-  local f found=0 n t s c b u
+  local f found=0 n t s c b u fc d
   for f in "$DATA_DIR"/state/*/deploy.json; do
     [ -f "$f" ] || continue
     found=1
@@ -75,7 +75,15 @@ cmd_show() {
     c="$(yq -r '.commit // ""' "$f")"
     b="$(yq -r '.branch // ""' "$f")"
     u="$(yq -r '.updated_at // ""' "$f")"
+    fc="$(yq -r '.failed_commit // ""' "$f")"
     printf '  %s (type=%s) status=%s branch=%s commit=%.12s at %s\n' "$n" "$t" "$s" "$b" "$c" "$u"
+    [ -n "$fc" ] && printf '    失败提交: %.12s\n' "$fc"
+    d="$DATA_DIR/state/$n/failed.json"
+    if [ -f "$d" ]; then
+      printf '    已标记失败: %.12s (%s, rescued=%s) %s\n' \
+        "$(yq -r '.commit // ""' "$d")" "$(yq -r '.branch // ""' "$d")" \
+        "$(yq -r '.rescued // false' "$d")" "$(yq -r '.message // ""' "$d")"
+    fi
   done
   [ "$found" = "1" ] || echo "  (无部署记录)"
 }

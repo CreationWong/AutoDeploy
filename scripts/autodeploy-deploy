@@ -19,6 +19,8 @@ LOG_FILE=""
 CFG=""
 TARGET=""
 RUN_DIR=""
+PREV_BACKUP=""
+ROLLING_BACK=0
 
 if [ -r "$ENV_FILE" ]; then
   set -a
@@ -36,6 +38,31 @@ log() {
   fi
 }
 
+FAILED_COMMIT=""
+
+mark_failed() {
+  local commit="$1" branch="$2" message="${3:-}" rescue="${4:-}" f
+  if [ -z "$commit" ]; then
+    return 0
+  fi
+  f="$STATE_DIR/failed.json"
+  if APP_COMMIT="$commit" APP_BRANCH="$branch" APP_MESSAGE="$message" \
+     APP_RESCUED="$rescue" APP_AT="$(date -Iseconds)" \
+     yq -n -o=json -P '
+       .commit = strenv(APP_COMMIT) |
+       .branch = strenv(APP_BRANCH) |
+       .message = strenv(APP_MESSAGE) |
+       .rescued = (strenv(APP_RESCUED) | . as $v | $v == "true") |
+       .failed_at = strenv(APP_AT)
+     ' > "$f.tmp" 2>/dev/null; then
+    mv "$f.tmp" "$f"
+    log "已标记失败提交: $commit ($branch)"
+  else
+    rm -f "$f.tmp"
+    log "警告: 写入失败提交标记失败"
+  fi
+}
+
 write_status() {
   local status="$1" message="${2:-}"
   if [ -z "$STATE_DIR" ]; then
@@ -44,6 +71,7 @@ write_status() {
   mkdir -p "$STATE_DIR"
   if APP_NAME="$STATE_NAME" APP_TYPE="$STATE_TYPE" APP_STATUS="$status" APP_MESSAGE="$message" \
      APP_COMMIT="$STATE_COMMIT" APP_BRANCH="$STATE_BRANCH" APP_UPDATED_AT="$(date -Iseconds)" \
+     APP_FAILED_COMMIT="${FAILED_COMMIT:-}" \
      yq -n -o=json -P '
        .name = strenv(APP_NAME) |
        .type = strenv(APP_TYPE) |
@@ -51,7 +79,8 @@ write_status() {
        .message = strenv(APP_MESSAGE) |
        .commit = strenv(APP_COMMIT) |
        .branch = strenv(APP_BRANCH) |
-       .updated_at = strenv(APP_UPDATED_AT)
+       .updated_at = strenv(APP_UPDATED_AT) |
+       .failed_commit = strenv(APP_FAILED_COMMIT)
      ' > "$STATE_DIR/deploy.json.tmp" 2>/dev/null; then
     mv "$STATE_DIR/deploy.json.tmp" "$STATE_DIR/deploy.json"
   else
@@ -67,6 +96,9 @@ die() {
     printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$LOG_FILE" 2>/dev/null || true
   fi
   write_status "failed" "$*"
+  if [ "$ROLLING_BACK" != "1" ]; then
+    mark_failed "$STATE_COMMIT" "$STATE_BRANCH" "$*" "false"
+  fi
   exit 1
 }
 
@@ -555,7 +587,7 @@ deploy_process() {
   local state_dir="$STATE_DIR" header start_sh supervisor_conf
 
   workdir_rel="$(cfg_str '.workdir' '.')"
-  workdir="$(realpath -m -- "$TARGET/$workdir_rel")"
+  workdir="$(realpath -m -- "$TARGET/$workdir_rel" 2>/dev/null || printf '%s' "$TARGET/$workdir_rel")"
   case "$workdir" in
     "$TARGET"|"$TARGET"/*) ;;
     *) die "workdir 必须位于项目目录内: $workdir_rel" ;;
@@ -783,8 +815,11 @@ main() {
   mkdir -p "$STATE_DIR" "$log_dir"
   LOG_FILE="$log_dir/deploy.log"
   setup_run_dir
+  PREV_BACKUP="$RUN_DIR/prev"
 
-  local short_commit="${STATE_COMMIT:0:12}"
+  backup_previous
+
+  local short_commit="${STATE_COMMIT:0:12}" deploy_failed
   log "部署项目: $name (type=$STATE_TYPE, commit=${short_commit:--}, branch=${STATE_BRANCH:--})"
   write_status "deploying"
 
@@ -799,21 +834,100 @@ main() {
 
   cleanup_previous "$STATE_TYPE" "$name"
 
+  deploy_failed=""
   case "$STATE_TYPE" in
-    process) deploy_process "$name" ;;
-    docker-compose) deploy_compose "$name" ;;
+    process)
+      if ! deploy_process "$name"; then
+        deploy_failed="进程启动失败"
+      fi
+      ;;
+    docker-compose)
+      if ! deploy_compose "$name"; then
+        deploy_failed="compose 启动失败"
+      fi
+      ;;
     *) die "不支持的 type: $STATE_TYPE（可选 process / docker-compose）" ;;
   esac
 
-  health_check
-
-  if ! run_project_hook after; then
-    die ".AutoDeploy/after.sh 执行失败"
+  if [ -z "$deploy_failed" ] && ! health_check; then
+    deploy_failed="健康检查未通过"
   fi
-  chown -R git:git "$TARGET" 2>/dev/null || true
 
+  if [ -z "$deploy_failed" ] && ! run_project_hook after; then
+    deploy_failed=".AutoDeploy/after.sh 执行失败"
+  fi
+
+  if [ -n "$deploy_failed" ]; then
+    log "部署失败: $deploy_failed"
+    mark_failed "$STATE_COMMIT" "$STATE_BRANCH" "$deploy_failed" "false"
+    if ! rollback_if_possible; then
+      log "已停止部署，未回退；当前提交已标记为失败"
+      exit 1
+    fi
+  fi
+
+  chown -R git:git "$TARGET" 2>/dev/null || true
   write_status "success"
   log "部署完成: $name ($STATE_TYPE)"
+}
+
+backup_previous() {
+  local prev_commit
+  if [ ! -f "$STATE_DIR/deploy.json" ]; then
+    return 0
+  fi
+  if [ "$(yq -r '.status // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)" != "success" ]; then
+    return 0
+  fi
+  prev_commit="$(yq -r '.commit // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
+  if [ -z "$prev_commit" ] || [ "$prev_commit" = "$STATE_COMMIT" ]; then
+    return 0
+  fi
+  rm -rf "$PREV_BACKUP" 2>/dev/null || true
+  if cp -a "$TARGET" "$PREV_BACKUP"; then
+    log "已记录上一可用版本: ${prev_commit:0:12}"
+  else
+    rm -rf "$PREV_BACKUP" 2>/dev/null || true
+    warn "备份上一版本失败，失败时将无法自动回退"
+  fi
+}
+
+deploy_previous_version() {
+  local commit="$1"
+  rm -rf "$TARGET"
+  if cp -a "$PREV_BACKUP" "$TARGET"; then
+    log "已回退到上一可用版本: ${commit:0:12}"
+  else
+    log "警告: 回退到上一版本失败"
+  fi
+  chown -R git:git "$TARGET" 2>/dev/null || true
+}
+
+rollback_if_possible() {
+  local prev_commit
+  prev_commit="$(yq -r '.commit // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
+  if [ -d "$PREV_BACKUP" ] && [ -n "$prev_commit" ]; then
+    log "部署失败，自动回退到上一可用版本: ${prev_commit:0:12}"
+    ROLLING_BACK=1
+    STATE_COMMIT="$prev_commit"
+    STATE_BRANCH="$(yq -r '.branch // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
+    deploy_previous_version "$prev_commit"
+    if deploy_process "$STATE_NAME"; then
+      FAILED_COMMIT="$prev_commit"
+      write_status "success" "已回退到 ${prev_commit:0:12}"
+      log "回退完成，服务运行于上一可用版本: ${prev_commit:0:12}"
+      return 0
+    fi
+    FAILED_COMMIT=""
+    log "警告: 回退版本未能启动，服务可能不可用"
+    return 1
+  fi
+  if [ -z "$prev_commit" ]; then
+    log "没有可用的上一版本，停止部署"
+    rm -rf "$TARGET"
+    log "已移除失败的部署目录: $TARGET"
+  fi
+  return 1
 }
 
 main "$@"

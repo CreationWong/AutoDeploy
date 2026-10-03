@@ -301,6 +301,16 @@ jobs:
 - 不支持：`uses`（除 actions/checkout）、`strategy/matrix`、`services`、`container`（报错中止）；`if`、`needs` 忽略并警告；`on`、`runs-on` 仅兼容忽略；
 - 步骤以 root 执行，部署前会把工作目录交还给 `git` 用户。
 
+## 部署失败自动回退
+
+每次部署前会把当前生效（`status: success`）的版本备份到临时目录。部署失败（进程未起、compose 失败、健康检查未通过、`after.sh` 失败）时：
+
+1. 先把失败的提交写入 `state/<name>/failed.json` 并在 `deploy.json.failed_commit` 记录（"标记这个提交"）；
+2. 存在上一可用版本 → 用备份目录替换工作目录，重新拉起该版本并写回 `success`（`failed_commit` 仍指向失败提交），服务保持可用；
+3. 没有上一可用版本（首次部署）→ 移除失败的工作目录、停止部署，仅保留失败标记。
+
+`type: process` 是原地更新，回退可直接恢复；`docker-compose` 回退会重建 compose 栈（同样需要 Docker）。`autodeploy show` 会显示 `failed_commit` 与 `failed.json` 标记。
+
 ## 容器内管理命令
 
 容器内置 `autodeploy` 命令，进入容器后即可查看/修改设置与提交历史：
@@ -358,7 +368,8 @@ docker exec -it autodeploy autodeploy help
 ├── git-home/.ssh/authorized_keys
 ├── htpasswd                          # HTTP Basic 凭据
 ├── deploy/app                        # 最近一次推送的代码工作目录
-├── state/<name>/deploy.json          # 最近部署状态
+├── state/<name>/deploy.json          # 最近部署状态（含 failed_commit）
+├── state/<name>/failed.json          # 最近一次失败的提交标记
 ├── state/<name>/environment.yml      # 当前生效的 environment 快照
 ├── state/<name>/environment.boot     # 上次构建环境的容器实例 ID
 ├── state/<name>/start.sh             # process 类型启动脚本
