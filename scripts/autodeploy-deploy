@@ -168,6 +168,8 @@ validate_types() {
   case "$t" in null|'!!null'|'!!map') ;; *) die "healthcheck 必须是映射" ;; esac
   t="$(yq -r '.services | type' "$CFG")"
   case "$t" in null|'!!null'|'!!seq') ;; *) die "services 必须是列表" ;; esac
+  t="$(yq -r '.deploy | type' "$CFG")"
+  case "$t" in null|'!!null'|'!!map') ;; *) die "deploy 必须是映射" ;; esac
 }
 
 prepare_environment() {

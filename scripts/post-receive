@@ -10,6 +10,8 @@ fi
 
 REPO_NAME="${REPO_NAME:-app}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+DEPLOY_TAG="${DEPLOY_TAG:-}"
+DEPLOY_TAG_MODE="${DEPLOY_TAG_MODE:-commit}"
 CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
 DATA_DIR="${AUTODEPLOY_DATA_DIR:-/data}"
 DEPLOY_ROOT="$DATA_DIR/deploy"
@@ -17,44 +19,142 @@ TARGET="$DEPLOY_ROOT/$REPO_NAME"
 
 log() { echo "[AutoDeploy] $*"; }
 
-branch_matches() {
-  local patterns="$1" branch="$2" pattern
+pattern_matches() {
+  local patterns="$1" name="$2" pattern
+  [ -z "$patterns" ] && return 1
   [ "$patterns" = "*" ] && return 0
   IFS=',' read -r -a _patterns <<< "$patterns"
   for pattern in "${_patterns[@]}"; do
-    case "$branch" in $pattern) return 0 ;; esac
+    case "$name" in $pattern) return 0 ;; esac
   done
+  return 1
+}
+
+read_trigger() {
+  local commit="$1" field="$2" default="$3" cfg out
+  cfg="$(git show "$commit:$CONFIG_NAME" 2>/dev/null || true)"
+  if [ -z "$cfg" ]; then
+    printf '%s' "$default"
+    return 0
+  fi
+  if [ "$(printf '%s' "$cfg" | yq -r 'has("deploy")' 2>/dev/null || true)" != "true" ]; then
+    printf '%s' "$default"
+    return 0
+  fi
+  out="$(printf '%s' "$cfg" | yq -r ".deploy.$field // [] | if tag == \"!!seq\" then join(\",\") else tostring end" 2>/dev/null || true)"
+  if [ -z "$out" ]; then
+    printf '%s' "$default"
+    return 0
+  fi
+  printf '%s' "$out"
+}
+
+find_branch_for_commit() {
+  local patterns="$1" commit="$2" b
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    if pattern_matches "$patterns" "$b"; then
+      printf '%s' "$b"
+      return 0
+    fi
+  done < <(git for-each-ref --contains "$commit" --format='%(refname:short)' refs/heads/ 2>/dev/null)
   return 1
 }
 
 deploy_ref=""
 deploy_branch=""
-while read -r _oldrev newrev ref; do
-  [ -z "${ref:-}" ] && continue
-  case "$ref" in refs/heads/*) ;; *) continue ;; esac
-  branch="${ref#refs/heads/}"
-  if [ "$newrev" = "0000000000000000000000000000000000000000" ]; then
-    log "分支 $branch 已删除，跳过部署"
-    continue
+
+if [ "${1:-}" = "--ref" ] || [ "${1:-}" = "-r" ]; then
+  shift
+  manual_ref="${1:-}"
+  if [ -z "$manual_ref" ]; then
+    echo "用法: autodeploy-post-receive --ref <branch|tag|commit>" >&2
+    exit 1
   fi
-  if branch_matches "$DEPLOY_BRANCH" "$branch"; then
-    if [ -n "$deploy_ref" ]; then
-      log "分支 $branch 也匹配部署列表，本次仅部署 $deploy_branch，跳过"
+  export GIT_DIR="${GIT_DIR:-$DATA_DIR/git-home/${REPO_NAME}.git}"
+  if git rev-parse --verify -q "refs/heads/$manual_ref^{commit}" >/dev/null 2>&1; then
+    deploy_ref="$(git rev-parse "refs/heads/$manual_ref^{commit}")"
+    deploy_branch="$manual_ref"
+  elif git rev-parse --verify -q "refs/tags/$manual_ref^{commit}" >/dev/null 2>&1; then
+    deploy_ref="$(git rev-parse "refs/tags/$manual_ref^{commit}")"
+    deploy_branch="$manual_ref"
+  elif git rev-parse --verify -q "$manual_ref^{commit}" >/dev/null 2>&1; then
+    deploy_ref="$(git rev-parse "$manual_ref^{commit}")"
+    deploy_branch="$manual_ref"
+  else
+    log "错误: 无法解析 ref: $manual_ref"
+    exit 1
+  fi
+  log "手动部署 ref: $manual_ref"
+else
+  while read -r _oldrev newrev ref; do
+    [ -z "${ref:-}" ] && continue
+    if [ "$newrev" = "0000000000000000000000000000000000000000" ]; then
+      case "$ref" in
+        refs/heads/*|refs/tags/*) log "引用 ${ref} 已删除，跳过部署" ;;
+      esac
       continue
     fi
-    deploy_ref="$newrev"
-    deploy_branch="$branch"
-  else
-    log "分支 $branch 不在部署列表 ($DEPLOY_BRANCH) 中，跳过"
-  fi
-done
+    case "$ref" in
+      refs/heads/*)
+        branch="${ref#refs/heads/}"
+        branches="$(read_trigger "$newrev" branches "$DEPLOY_BRANCH")"
+        if pattern_matches "$branches" "$branch"; then
+          if [ -n "$deploy_ref" ]; then
+            log "分支 $branch 也匹配部署列表，本次仅部署 $deploy_branch，跳过"
+            continue
+          fi
+          deploy_ref="$newrev"
+          deploy_branch="$branch"
+        else
+          log "分支 $branch 不在部署列表 ($branches) 中，跳过"
+        fi
+        ;;
+      refs/tags/*)
+        tag="${ref#refs/tags/}"
+        tag_commit="$(git rev-parse "$ref^{commit}" 2>/dev/null || true)"
+        if [ -z "$tag_commit" ]; then
+          log "标签 $tag 无法解析为提交，跳过"
+          continue
+        fi
+        tags="$(read_trigger "$tag_commit" tags "$DEPLOY_TAG")"
+        if ! pattern_matches "$tags" "$tag"; then
+          log "标签 $tag 不在部署列表 (${tags:-未启用}) 中，跳过"
+          continue
+        fi
+        if [ -n "$deploy_ref" ]; then
+          log "标签 $tag 也匹配部署列表，本次仅部署 $deploy_branch，跳过"
+          continue
+        fi
+        tag_mode="$(read_trigger "$tag_commit" tag_mode "$DEPLOY_TAG_MODE")"
+        case "$tag_mode" in branch) ;; *) tag_mode=commit ;; esac
+        if [ "$tag_mode" = "branch" ]; then
+          branches="$(read_trigger "$tag_commit" branches "$DEPLOY_BRANCH")"
+          tag_branch="$(find_branch_for_commit "$branches" "$tag_commit" || true)"
+          if [ -z "$tag_branch" ]; then
+            log "标签 $tag 未找到匹配分支 ($branches)，跳过"
+            continue
+          fi
+          deploy_ref="$(git rev-parse "refs/heads/$tag_branch")"
+          deploy_branch="$tag_branch"
+          log "标签 $tag 命中，部署其所在分支 $tag_branch 最新提交"
+        else
+          deploy_ref="$tag_commit"
+          deploy_branch="$tag"
+          log "标签 $tag 命中，部署该标签提交"
+        fi
+        ;;
+      *) continue ;;
+    esac
+  done
+fi
 
 if [ -z "$deploy_ref" ]; then
-  log "本次推送没有需要部署的分支，退出"
+  log "本次没有需要部署的引用，退出"
   exit 0
 fi
 
-log "开始处理分支 $deploy_branch ($deploy_ref)"
+log "开始处理 $deploy_branch ($deploy_ref)"
 mkdir -p "$DEPLOY_ROOT"
 staging="$(mktemp -d "$DEPLOY_ROOT/.staging-${REPO_NAME}.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT

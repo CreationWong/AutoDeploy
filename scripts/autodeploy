@@ -21,6 +21,8 @@ load_settings() {
   fi
   REPO_NAME="${REPO_NAME:-app}"
   DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+  DEPLOY_TAG="${DEPLOY_TAG:-}"
+  DEPLOY_TAG_MODE="${DEPLOY_TAG_MODE:-commit}"
   AUTODEPLOY_CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
 }
 
@@ -30,6 +32,8 @@ write_env_file() {
   {
     printf 'REPO_NAME=%q\n' "$REPO_NAME"
     printf 'DEPLOY_BRANCH=%q\n' "$DEPLOY_BRANCH"
+    printf 'DEPLOY_TAG=%q\n' "$DEPLOY_TAG"
+    printf 'DEPLOY_TAG_MODE=%q\n' "$DEPLOY_TAG_MODE"
     printf 'AUTODEPLOY_CONFIG_NAME=%q\n' "$AUTODEPLOY_CONFIG_NAME"
   } > "$tmp"
   chown root:git "$tmp" 2>/dev/null || true
@@ -42,6 +46,8 @@ cmd_show() {
   echo "AutoDeploy 设置"
   printf '  REPO_NAME              = %s\n' "$REPO_NAME"
   printf '  DEPLOY_BRANCH          = %s\n' "$DEPLOY_BRANCH"
+  printf '  DEPLOY_TAG             = %s\n' "${DEPLOY_TAG:-<未启用>}"
+  printf '  DEPLOY_TAG_MODE        = %s\n' "$DEPLOY_TAG_MODE"
   printf '  AUTODEPLOY_CONFIG_NAME = %s\n' "$AUTODEPLOY_CONFIG_NAME"
   printf '  SSH_PORT               = %s\n' "${AUTODEPLOY_SSH_PORT:-2222}"
   printf '  HTTP_PORT              = %s\n' "${AUTODEPLOY_HTTP_PORT:-8080}"
@@ -97,9 +103,9 @@ cmd_set() {
   key="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
   case "$key" in
     CONFIG_NAME|AUTODEPLOY_CONFIG_NAME) key=AUTODEPLOY_CONFIG_NAME ;;
-    REPO_NAME|DEPLOY_BRANCH) ;;
+    REPO_NAME|DEPLOY_BRANCH|DEPLOY_TAG|DEPLOY_TAG_MODE) ;;
     *)
-      echo "不支持修改的键: $1（可选: REPO_NAME, DEPLOY_BRANCH, AUTODEPLOY_CONFIG_NAME）" >&2
+      echo "不支持修改的键: $1（可选: REPO_NAME, DEPLOY_BRANCH, DEPLOY_TAG, DEPLOY_TAG_MODE, AUTODEPLOY_CONFIG_NAME）" >&2
       return 1
       ;;
   esac
@@ -118,6 +124,9 @@ cmd_set() {
     AUTODEPLOY_CONFIG_NAME)
       case "$value" in */*) echo "配置名不能包含 /: $value" >&2; return 1 ;; esac
       ;;
+    DEPLOY_TAG_MODE)
+      case "$value" in commit|branch) ;; *) echo "DEPLOY_TAG_MODE 只能是 commit 或 branch: $value" >&2; return 1 ;; esac
+      ;;
   esac
 
   tmp="$(mktemp)"
@@ -132,10 +141,27 @@ cmd_set() {
   case "$key" in
     REPO_NAME) REPO_NAME="$value" ;;
     DEPLOY_BRANCH) DEPLOY_BRANCH="$value" ;;
+    DEPLOY_TAG) DEPLOY_TAG="$value" ;;
+    DEPLOY_TAG_MODE) DEPLOY_TAG_MODE="$value" ;;
     AUTODEPLOY_CONFIG_NAME) AUTODEPLOY_CONFIG_NAME="$value" ;;
   esac
   write_env_file
   log "已更新 $key=$value（下一次推送生效，重启后保留）"
+}
+
+cmd_deploy() {
+  load_settings
+  local ref="${1:-}"
+  if [ -z "$ref" ]; then
+    echo "用法: autodeploy deploy <branch|tag|commit>" >&2
+    return 1
+  fi
+  local repo_dir="$GIT_HOME/${REPO_NAME}.git"
+  if [ ! -d "$repo_dir" ]; then
+    echo "裸仓库不存在: $repo_dir" >&2
+    return 1
+  fi
+  GIT_DIR="$repo_dir" /usr/local/bin/autodeploy-post-receive --ref "$ref"
 }
 
 cmd_help() {
@@ -146,15 +172,19 @@ AutoDeploy 管理命令
 
   show                      查看当前设置、裸仓库最近提交与部署状态
   set <KEY> <VALUE>         修改设置（写入 /data/settings.env，重启后保留）
+  deploy <branch|tag|commit> 手动部署指定 ref（可用于回滚）
   log [N]                   查看当前项目提交历史（默认最近 10 条）
   help                      显示本帮助
 
 可修改的 KEY:
   REPO_NAME                 裸仓库/默认应用名（默认 app）
-  DEPLOY_BRANCH             触发部署的分支，逗号分隔、支持 * 通配（默认 main）
+  DEPLOY_BRANCH             默认触发部署的分支，逗号分隔、支持 * 通配（默认 main）
+  DEPLOY_TAG                默认触发部署的标签，逗号分隔、支持 * 通配（默认空=不启用）
+  DEPLOY_TAG_MODE           标签命中后的行为：commit=部署标签提交 / branch=部署标签所在分支最新提交（默认 commit）
   AUTODEPLOY_CONFIG_NAME    部署配置文件名（默认 AutoDeploy.config.yaml）
 
-说明: 修改对下一次 git push 生效；REPO_NAME 不会重命名已存在的裸仓库。
+说明: 上述触发规则可在项目 AutoDeploy.config.yaml 的 deploy 段按项目覆盖；
+      修改对下一次 git push 生效；REPO_NAME 不会重命名已存在的裸仓库。
 EOF
 }
 
@@ -171,6 +201,10 @@ case "${1:-help}" in
       exit 1
     fi
     cmd_set "$1" "$2"
+    ;;
+  deploy)
+    shift
+    cmd_deploy "${1:-}"
     ;;
   help|-h|--help|"") cmd_help ;;
   *)

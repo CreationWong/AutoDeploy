@@ -135,7 +135,9 @@ networks:
 | HTTP | `http://<user>@<host>:<HTTP_PORT>/app.git`（默认 8080） | `AUTODEPLOY_HTTP_USER` / `AUTODEPLOY_HTTP_PASSWORD`，或首次启动随机生成并打印 |
 
 - 裸仓库固定为 `${REPO_NAME}.git`（默认 `app.git`）。
-- 只有 `DEPLOY_BRANCH` 匹配的分支触发部署，支持逗号分隔和通配（如 `main,release/*` 或 `*`）。
+- 只有匹配的分支/标签才触发部署，支持逗号分隔和通配（如 `main,release/*` 或 `*`）。
+- 默认触发规则来自容器环境变量 `DEPLOY_BRANCH` / `DEPLOY_TAG` / `DEPLOY_TAG_MODE`；项目可在 `AutoDeploy.config.yaml` 的 `deploy` 段按项目覆盖（见下）。
+- 一次推送命中多个分支/标签时，只部署第一个匹配的引用。
 - 轮换 HTTP 密码：删除 `/data/htpasswd` 后重启，或设置 `AUTODEPLOY_HTTP_PASSWORD`。
 
 ## AutoDeploy.config.yaml
@@ -152,6 +154,30 @@ networks:
 | `env` | 注入应用、部署命令、钩子与 workflow 的环境变量映射 |
 | `healthcheck` | 可选：`url` 或 `port` + `timeout`（秒，默认 30），部署后轮询，失败标记部署失败 |
 | `environment` | 可选：基础环境构建（见下），任何 `type` 都在部署前执行 |
+| `deploy` | 可选：覆盖该项目的触发规则（见下），不写则用容器环境变量 |
+
+### deploy（触发规则，可选）
+
+按项目覆盖"哪些分支/标签触发部署"，优先于容器环境变量 `DEPLOY_BRANCH` / `DEPLOY_TAG` / `DEPLOY_TAG_MODE`：
+
+| 字段 | 说明 |
+| --- | --- |
+| `deploy.branches` | 触发部署的分支列表/字符串，支持逗号分隔与 `*` 通配（如 `[main, "release/*"]`） |
+| `deploy.tags` | 触发部署的标签列表/字符串，支持逗号分隔与 `*` 通配（如 `["v*"]`） |
+| `deploy.tag_mode` | 标签命中后的行为：`commit`（默认，部署标签指向的提交）或 `branch`（部署该标签所在分支的最新提交） |
+
+```yaml
+version: 1
+name: my-app
+type: process
+deploy:
+  branches: [main, "release/*"]
+  tags: ["v*"]
+  tag_mode: commit
+start: node server.js
+```
+
+说明：`deploy.branches` 未写则回退到环境变量 `DEPLOY_BRANCH`；`branch` 模式下会在匹配 `deploy.branches`（或其回退值）的分支中查找包含该标签提交的分支并部署其最新提交。
 
 ### environment（基础环境构建）
 
@@ -280,20 +306,24 @@ jobs:
 容器内置 `autodeploy` 命令，进入容器后即可查看/修改设置与提交历史：
 
 ```bash
-docker exec -it autodeploy autodeploy show            # 设置 + 最近提交 + 部署状态
-docker exec -it autodeploy autodeploy log 20          # 当前项目最近 20 条提交
+docker exec -it autodeploy autodeploy show               # 设置 + 最近提交 + 部署状态
+docker exec -it autodeploy autodeploy log 20             # 当前项目最近 20 条提交
 docker exec -it autodeploy autodeploy set DEPLOY_BRANCH 'main,release/*'
+docker exec -it autodeploy autodeploy set DEPLOY_TAG 'v*'
+docker exec -it autodeploy autodeploy deploy v1.2.0      # 手动部署指定 ref
 docker exec -it autodeploy autodeploy help
 ```
 
 | 命令 | 说明 |
 | --- | --- |
-| `autodeploy show` | 显示设置（REPO_NAME/DEPLOY_BRANCH/配置名/端口/用户名）、裸仓库最近提交、各应用部署状态 |
-| `autodeploy set <KEY> <VALUE>` | 修改设置，写入 `/data/settings.env` 并即时更新 `/etc/autodeploy/env` |
+| `autodeploy show` | 显示设置（REPO_NAME/触发规则/配置名/端口/用户名）、裸仓库最近提交、各应用部署状态 |
+| `autodeploy set <KEY> <VALUE>` | 修改默认设置，写入 `/data/settings.env` 并即时更新 `/etc/autodeploy/env` |
+| `autodeploy deploy <branch\|tag\|commit>` | 手动部署指定 ref（可对历史提交/标签，用于回滚） |
 | `autodeploy log [N]` | 查看当前项目提交历史（默认 10 条，含分支装饰） |
 
-- 可修改 KEY：`REPO_NAME`、`DEPLOY_BRANCH`、`AUTODEPLOY_CONFIG_NAME`；
+- 可修改 KEY：`REPO_NAME`、`DEPLOY_BRANCH`、`DEPLOY_TAG`、`DEPLOY_TAG_MODE`、`AUTODEPLOY_CONFIG_NAME`；
 - 修改对下一次 `git push` 生效，并持久化到 `/data/settings.env`，容器重建后由入口脚本重新加载；
+- 项目级触发规则优先：`AutoDeploy.config.yaml` 的 `deploy` 段会覆盖上述默认值；
 - `REPO_NAME` 只改变部署目录/默认应用名，不会重命名已存在的裸仓库。
 
 ## 环境变量
@@ -303,7 +333,9 @@ docker exec -it autodeploy autodeploy help
 | `AUTODEPLOY_SSH_PORT` | `2222` | 宿主机映射的 SSH 端口（compose 变量，容器内固定 22） |
 | `AUTODEPLOY_HTTP_PORT` | `8080` | 宿主机映射的 HTTP 端口（compose 变量，容器内固定 80） |
 | `REPO_NAME` | `app` | 裸仓库名（`${REPO_NAME}.git`），也作为默认应用名 |
-| `DEPLOY_BRANCH` | `main` | 触发部署的分支，支持逗号分隔和 `*` 通配 |
+| `DEPLOY_BRANCH` | `main` | 默认触发部署的分支，支持逗号分隔和 `*` 通配（可被 `deploy.branches` 覆盖） |
+| `DEPLOY_TAG` | 空 | 默认触发部署的标签，支持逗号分隔和 `*` 通配，空=不启用（可被 `deploy.tags` 覆盖） |
+| `DEPLOY_TAG_MODE` | `commit` | 标签命中后的行为：`commit` / `branch`（可被 `deploy.tag_mode` 覆盖） |
 | `AUTODEPLOY_CONFIG_NAME` | `AutoDeploy.config.yaml` | 部署配置文件名 |
 | `AUTHORIZED_KEYS` | 空 | SSH 公钥内容（可多行），与 `/data/authorized_keys` 合并 |
 | `AUTODEPLOY_HTTP_USER` | `autodeploy` | HTTP Basic 用户名 |

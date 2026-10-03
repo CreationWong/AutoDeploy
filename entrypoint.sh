@@ -4,6 +4,8 @@ set -euo pipefail
 DATA_DIR="${AUTODEPLOY_DATA_DIR:-/data}"
 REPO_NAME="${REPO_NAME:-app}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+DEPLOY_TAG="${DEPLOY_TAG:-}"
+DEPLOY_TAG_MODE="${DEPLOY_TAG_MODE:-commit}"
 CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
 SSH_USER="git"
 
@@ -17,6 +19,8 @@ if [ -r "$SETTINGS_FILE" ]; then
   set +a
   REPO_NAME="${REPO_NAME:-app}"
   DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+  DEPLOY_TAG="${DEPLOY_TAG:-}"
+  DEPLOY_TAG_MODE="${DEPLOY_TAG_MODE:-commit}"
   CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
   log "已加载持久化设置: $SETTINGS_FILE"
 fi
@@ -86,6 +90,8 @@ chmod 640 "$HTPASSWD"
 {
   printf 'REPO_NAME=%q\n' "$REPO_NAME"
   printf 'DEPLOY_BRANCH=%q\n' "$DEPLOY_BRANCH"
+  printf 'DEPLOY_TAG=%q\n' "$DEPLOY_TAG"
+  printf 'DEPLOY_TAG_MODE=%q\n' "$DEPLOY_TAG_MODE"
   printf 'AUTODEPLOY_CONFIG_NAME=%q\n' "$CONFIG_NAME"
 } > /etc/autodeploy/env
 chown root:"$SSH_USER" /etc/autodeploy/env
