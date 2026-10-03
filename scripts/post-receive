@@ -38,6 +38,10 @@ while read -r _oldrev newrev ref; do
     continue
   fi
   if branch_matches "$DEPLOY_BRANCH" "$branch"; then
+    if [ -n "$deploy_ref" ]; then
+      log "分支 $branch 也匹配部署列表，本次仅部署 $deploy_branch，跳过"
+      continue
+    fi
     deploy_ref="$newrev"
     deploy_branch="$branch"
   else

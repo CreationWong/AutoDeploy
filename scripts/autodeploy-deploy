@@ -18,6 +18,7 @@ STATE_DIR=""
 LOG_FILE=""
 CFG=""
 TARGET=""
+RUN_DIR=""
 
 if [ -r "$ENV_FILE" ]; then
   set -a
@@ -77,6 +78,16 @@ cfg_str() {
   else
     printf '%s' "$out"
   fi
+}
+
+yq_list() {
+  yq -r0 "($1 // []) | (if tag == \"!!seq\" then .[] else . end) | tostring" "$2"
+}
+
+setup_run_dir() {
+  RUN_DIR="$(mktemp -d "$STATE_DIR/.run.XXXXXX")"
+  chmod 755 "$RUN_DIR"
+  trap 'rm -rf "$RUN_DIR"' EXIT
 }
 
 supervisorctl_log() {
@@ -166,11 +177,12 @@ prepare_environment() {
     return 0
   fi
 
-  local snapshot="$STATE_DIR/environment.yml"
-  yq -o=yaml '.environment' "$CFG" > "$snapshot.tmp"
+  local snapshot="$STATE_DIR/environment.yml" tmp
+  tmp="$(mktemp "$RUN_DIR/environment.XXXXXX")"
+  yq -o=yaml '.environment' "$CFG" > "$tmp"
 
   local new_hash old_hash="" force boot_id boot_file same_instance=0
-  new_hash="$(sha256sum "$snapshot.tmp" | awk '{print $1}')"
+  new_hash="$(sha256sum "$tmp" | awk '{print $1}')"
   if [ -f "$snapshot" ]; then
     old_hash="$(sha256sum "$snapshot" | awk '{print $1}')"
   fi
@@ -181,7 +193,7 @@ prepare_environment() {
   fi
   force="$(cfg_str '.environment.force' 'false')"
   if [ "$force" != "true" ] && [ "$same_instance" = "1" ] && [ -n "$old_hash" ] && [ "$new_hash" = "$old_hash" ]; then
-    rm -f "$snapshot.tmp"
+    rm -f "$tmp"
     log "基础环境未变化，跳过构建"
     return 0
   fi
@@ -193,7 +205,7 @@ prepare_environment() {
     if [ -n "$item" ]; then
       packages+=("$item")
     fi
-  done < <(yq -r0 '.environment.packages // [] | .[] | tostring' "$CFG")
+  done < <(yq_list '.environment.packages' "$CFG")
   for item in "${packages[@]}"; do
     if ! dpkg -s "$item" >/dev/null 2>&1; then
       missing+=("$item")
@@ -203,7 +215,7 @@ prepare_environment() {
     if [ -n "$item" ]; then
       setup_commands+=("$item")
     fi
-  done < <(yq -r0 '.environment.setup // [] | .[] | tostring' "$CFG")
+  done < <(yq_list '.environment.setup' "$CFG")
 
   if [ "${#missing[@]}" -gt 0 ]; then
     local install_cmd="apt-get install -y --no-install-recommends"
@@ -222,7 +234,7 @@ prepare_environment() {
     fi
   done
 
-  mv "$snapshot.tmp" "$snapshot"
+  mv "$tmp" "$snapshot"
   printf '%s\n' "$boot_id" > "$STATE_DIR/environment.boot"
   log "基础环境构建完成"
 }
@@ -251,6 +263,7 @@ restore_environment() {
   STATE_DIR="$DATA_DIR/state/$STATE_NAME"
   mkdir -p "$STATE_DIR" "$DATA_DIR/logs/$STATE_NAME"
   LOG_FILE="$DATA_DIR/logs/$STATE_NAME/deploy.log"
+  setup_run_dir
   prepare_environment
 }
 
@@ -260,7 +273,7 @@ run_project_hook() {
     return 0
   fi
   log "执行 .AutoDeploy/$stage.sh"
-  runner="$STATE_DIR/hook-$stage.sh"
+  runner="$RUN_DIR/hook-$stage.sh"
   {
     printf '#!/bin/bash\nset -e\n'
     printf 'cd %q\n' "$TARGET"
@@ -304,7 +317,7 @@ run_workflow_file() {
   if ! yq '.' "$wf" >/dev/null 2>&1; then
     die "workflow 解析失败: $wf_name"
   fi
-  jobs_file="$STATE_DIR/workflow-jobs.txt"
+  jobs_file="$RUN_DIR/workflow-jobs.txt"
   yq -r '.jobs // {} | to_entries | .[] | .key' "$wf" > "$jobs_file"
   if [ ! -s "$jobs_file" ]; then
     log "workflow $wf_name 没有 jobs，跳过"
@@ -342,9 +355,9 @@ run_workflow_job() {
   default_shell="$(yq -r '.defaults.run.shell // ""' "$wf")"
   default_wd="$(yq -r '.defaults.run."working-directory" // ""' "$wf")"
 
-  local job_env_file="$STATE_DIR/workflow-job-env.sh"
-  local github_env="$STATE_DIR/github-env"
-  local github_output="$STATE_DIR/github-output"
+  local job_env_file="$RUN_DIR/workflow-job-env.sh"
+  local github_env="$RUN_DIR/github-env"
+  local github_output="$RUN_DIR/github-output"
   : > "$job_env_file"
   write_exports "$wf" \
     "((.env // {}) * (${job_path}.env // {})) | to_entries | .[] | .key + \"=\" + (.value | tostring)" \
@@ -405,7 +418,7 @@ run_workflow_job() {
       fi
     fi
 
-    local runner="$STATE_DIR/workflow-step.sh"
+    local runner="$RUN_DIR/workflow-step.sh"
     : > "$github_env"
     : > "$github_output"
     {
@@ -462,7 +475,7 @@ run_workflow_job() {
 }
 
 cleanup_previous() {
-  local current="$1" name="$2" prev="" program project
+  local current="$1" name="$2" prev="" program project cf candidate
   if [ -f "$STATE_DIR/deploy.json" ]; then
     prev="$(yq -r '.type // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
   fi
@@ -480,7 +493,23 @@ cleanup_previous() {
   elif [ "$prev" = "docker-compose" ]; then
     project="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g')"
     log "停止旧的 compose 项目: $project"
-    if ! docker compose -p "$project" down --remove-orphans 2>&1 | tee -a "$LOG_FILE"; then
+    cf="$(cfg_str '.file' '')"
+    [ -n "$cf" ] && cf="$TARGET/$cf"
+    if [ -z "$cf" ] || [ ! -f "$cf" ]; then
+      cf=""
+      for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+        if [ -f "$TARGET/$candidate" ]; then
+          cf="$TARGET/$candidate"
+          break
+        fi
+      done
+    fi
+    local -a down_args=(docker compose -p "$project")
+    if [ -n "$cf" ]; then
+      down_args+=(-f "$cf")
+    fi
+    down_args+=(down --remove-orphans)
+    if ! "${down_args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
       log "警告: 停止旧 compose 项目失败"
     fi
   fi
@@ -489,7 +518,7 @@ cleanup_previous() {
 run_phase() {
   local expr="$1" user="$2" desc="$3" header="$4" cmd script
   while IFS= read -r -d '' cmd; do
-    script="$STATE_DIR/run.sh"
+    script="$RUN_DIR/run.sh"
     {
       cat "$header"
       printf 'echo %q\n' "+ $cmd"
@@ -502,7 +531,7 @@ run_phase() {
       die "$desc 失败: $cmd"
     fi
     rm -f "$script"
-  done < <(yq -r0 "$expr // [] | .[] | tostring" "$CFG")
+  done < <(yq_list "$expr" "$CFG")
 }
 
 wait_for_program() {
@@ -552,7 +581,7 @@ deploy_process() {
   chown "$app_user" "$log_dir"
   chmod 750 "$log_dir"
 
-  header="$state_dir/header.sh"
+  header="$RUN_DIR/header.sh"
   {
     printf '#!/bin/bash\nset -e\n'
     printf 'cd %q\n' "$workdir"
@@ -639,7 +668,7 @@ deploy_compose() {
   project="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g')"
   local -a args=(docker compose -f "$path" -p "$project")
 
-  env_file="$STATE_DIR/compose.env"
+  env_file="$RUN_DIR/compose.env"
   if [ "$(yq -r '.env // {} | length > 0' "$CFG")" = "true" ]; then
     : > "$env_file"
     while IFS= read -r -d '' kv; do
@@ -751,6 +780,7 @@ main() {
   local log_dir="$DATA_DIR/logs/$name"
   mkdir -p "$STATE_DIR" "$log_dir"
   LOG_FILE="$log_dir/deploy.log"
+  setup_run_dir
 
   local short_commit="${STATE_COMMIT:0:12}"
   log "部署项目: $name (type=$STATE_TYPE, commit=${short_commit:--}, branch=${STATE_BRANCH:--})"
