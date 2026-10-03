@@ -10,6 +10,17 @@ SSH_USER="git"
 log() { printf '[AutoDeploy] %s\n' "$*"; }
 warn() { printf '[AutoDeploy] 警告: %s\n' "$*" >&2; }
 
+SETTINGS_FILE="$DATA_DIR/settings.env"
+if [ -r "$SETTINGS_FILE" ]; then
+  set -a
+  . "$SETTINGS_FILE"
+  set +a
+  REPO_NAME="${REPO_NAME:-app}"
+  DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+  CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
+  log "已加载持久化设置: $SETTINGS_FILE"
+fi
+
 mkdir -p "$DATA_DIR"/{git-home,deploy,state,logs,ssh} \
          /etc/autodeploy /etc/supervisor/conf.d /var/log/autodeploy /var/log/supervisor /run/sshd
 chmod 755 /run/sshd
@@ -72,11 +83,11 @@ fi
 chown root:"$SSH_USER" "$HTPASSWD"
 chmod 640 "$HTPASSWD"
 
-cat > /etc/autodeploy/env <<EOF
-REPO_NAME=${REPO_NAME}
-DEPLOY_BRANCH=${DEPLOY_BRANCH}
-AUTODEPLOY_CONFIG_NAME=${CONFIG_NAME}
-EOF
+{
+  printf 'REPO_NAME=%q\n' "$REPO_NAME"
+  printf 'DEPLOY_BRANCH=%q\n' "$DEPLOY_BRANCH"
+  printf 'AUTODEPLOY_CONFIG_NAME=%q\n' "$CONFIG_NAME"
+} > /etc/autodeploy/env
 chown root:"$SSH_USER" /etc/autodeploy/env
 chmod 640 /etc/autodeploy/env
 

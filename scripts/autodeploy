@@ -1,0 +1,181 @@
+#!/bin/bash
+set -euo pipefail
+
+DATA_DIR="${AUTODEPLOY_DATA_DIR:-/data}"
+ENV_FILE="/etc/autodeploy/env"
+SETTINGS_FILE="$DATA_DIR/settings.env"
+GIT_HOME="$DATA_DIR/git-home"
+
+log() { printf '[AutoDeploy] %s\n' "$*"; }
+
+load_settings() {
+  if [ -r "$ENV_FILE" ]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
+  fi
+  if [ -r "$SETTINGS_FILE" ]; then
+    set -a
+    . "$SETTINGS_FILE"
+    set +a
+  fi
+  REPO_NAME="${REPO_NAME:-app}"
+  DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
+  AUTODEPLOY_CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
+}
+
+write_env_file() {
+  local tmp
+  tmp="$(mktemp)"
+  {
+    printf 'REPO_NAME=%q\n' "$REPO_NAME"
+    printf 'DEPLOY_BRANCH=%q\n' "$DEPLOY_BRANCH"
+    printf 'AUTODEPLOY_CONFIG_NAME=%q\n' "$AUTODEPLOY_CONFIG_NAME"
+  } > "$tmp"
+  chown root:git "$tmp" 2>/dev/null || true
+  chmod 640 "$tmp"
+  mv "$tmp" "$ENV_FILE"
+}
+
+cmd_show() {
+  load_settings
+  echo "AutoDeploy 设置"
+  printf '  REPO_NAME              = %s\n' "$REPO_NAME"
+  printf '  DEPLOY_BRANCH          = %s\n' "$DEPLOY_BRANCH"
+  printf '  AUTODEPLOY_CONFIG_NAME = %s\n' "$AUTODEPLOY_CONFIG_NAME"
+  printf '  SSH_PORT               = %s\n' "${AUTODEPLOY_SSH_PORT:-2222}"
+  printf '  HTTP_PORT              = %s\n' "${AUTODEPLOY_HTTP_PORT:-8080}"
+  printf '  HTTP_USER              = %s\n' "${AUTODEPLOY_HTTP_USER:-autodeploy}"
+  echo
+
+  local repo_dir="$GIT_HOME/${REPO_NAME}.git"
+  echo "裸仓库: $repo_dir"
+  if [ -d "$repo_dir" ] && git --git-dir="$repo_dir" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    git --git-dir="$repo_dir" log -1 --date=short \
+      --format='  最近提交: %h %s (%an, %ad)'
+  else
+    echo "  (暂无提交)"
+  fi
+  echo
+
+  echo "部署状态:"
+  local f found=0 n t s c b u
+  for f in "$DATA_DIR"/state/*/deploy.json; do
+    [ -f "$f" ] || continue
+    found=1
+    n="$(yq -r '.name // ""' "$f")"
+    t="$(yq -r '.type // ""' "$f")"
+    s="$(yq -r '.status // ""' "$f")"
+    c="$(yq -r '.commit // ""' "$f")"
+    b="$(yq -r '.branch // ""' "$f")"
+    u="$(yq -r '.updated_at // ""' "$f")"
+    printf '  %s (type=%s) status=%s branch=%s commit=%.12s at %s\n' "$n" "$t" "$s" "$b" "$c" "$u"
+  done
+  [ "$found" = "1" ] || echo "  (无部署记录)"
+}
+
+cmd_log() {
+  load_settings
+  local n="${1:-10}"
+  case "$n" in ''|*[!0-9]*) n=10 ;; esac
+  local repo_dir="$GIT_HOME/${REPO_NAME}.git"
+  if [ ! -d "$repo_dir" ]; then
+    echo "裸仓库不存在: $repo_dir" >&2
+    return 1
+  fi
+  if ! git --git-dir="$repo_dir" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    echo "(暂无提交记录)"
+    return 0
+  fi
+  git --git-dir="$repo_dir" log -n "$n" --all --decorate --date=short \
+    --format='%h  %ad  %an  %d %s'
+}
+
+cmd_set() {
+  load_settings
+  local key="$1" value="$2" tmp
+  key="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
+  case "$key" in
+    CONFIG_NAME|AUTODEPLOY_CONFIG_NAME) key=AUTODEPLOY_CONFIG_NAME ;;
+    REPO_NAME|DEPLOY_BRANCH) ;;
+    *)
+      echo "不支持修改的键: $1（可选: REPO_NAME, DEPLOY_BRANCH, AUTODEPLOY_CONFIG_NAME）" >&2
+      return 1
+      ;;
+  esac
+  if [ -z "$value" ]; then
+    echo "值不能为空" >&2
+    return 1
+  fi
+
+  case "$key" in
+    REPO_NAME)
+      if ! [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
+        echo "REPO_NAME 非法（仅字母数字下划线点和连字符）: $value" >&2
+        return 1
+      fi
+      ;;
+    AUTODEPLOY_CONFIG_NAME)
+      case "$value" in */*) echo "配置名不能包含 /: $value" >&2; return 1 ;; esac
+      ;;
+  esac
+
+  tmp="$(mktemp)"
+  if [ -f "$SETTINGS_FILE" ]; then
+    grep -v "^${key}=" "$SETTINGS_FILE" > "$tmp" || true
+  fi
+  printf '%s=%q\n' "$key" "$value" >> "$tmp"
+  chown root:git "$tmp"
+  chmod 640 "$tmp"
+  mv "$tmp" "$SETTINGS_FILE"
+
+  case "$key" in
+    REPO_NAME) REPO_NAME="$value" ;;
+    DEPLOY_BRANCH) DEPLOY_BRANCH="$value" ;;
+    AUTODEPLOY_CONFIG_NAME) AUTODEPLOY_CONFIG_NAME="$value" ;;
+  esac
+  write_env_file
+  log "已更新 $key=$value（下一次推送生效，重启后保留）"
+}
+
+cmd_help() {
+  cat <<'EOF'
+AutoDeploy 管理命令
+
+用法: autodeploy <命令> [参数]
+
+  show                      查看当前设置、裸仓库最近提交与部署状态
+  set <KEY> <VALUE>         修改设置（写入 /data/settings.env，重启后保留）
+  log [N]                   查看当前项目提交历史（默认最近 10 条）
+  help                      显示本帮助
+
+可修改的 KEY:
+  REPO_NAME                 裸仓库/默认应用名（默认 app）
+  DEPLOY_BRANCH             触发部署的分支，逗号分隔、支持 * 通配（默认 main）
+  AUTODEPLOY_CONFIG_NAME    部署配置文件名（默认 AutoDeploy.config.yaml）
+
+说明: 修改对下一次 git push 生效；REPO_NAME 不会重命名已存在的裸仓库。
+EOF
+}
+
+case "${1:-help}" in
+  show|status) cmd_show ;;
+  log|history)
+    shift
+    cmd_log "${1:-10}"
+    ;;
+  set)
+    shift
+    if [ "$#" -lt 2 ]; then
+      echo "用法: autodeploy set <KEY> <VALUE>" >&2
+      exit 1
+    fi
+    cmd_set "$1" "$2"
+    ;;
+  help|-h|--help|"") cmd_help ;;
+  *)
+    echo "未知命令: $1" >&2
+    cmd_help
+    exit 1
+    ;;
+esac

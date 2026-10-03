@@ -275,6 +275,27 @@ jobs:
 - 不支持：`uses`（除 actions/checkout）、`strategy/matrix`、`services`、`container`（报错中止）；`if`、`needs` 忽略并警告；`on`、`runs-on` 仅兼容忽略；
 - 步骤以 root 执行，部署前会把工作目录交还给 `git` 用户。
 
+## 容器内管理命令
+
+容器内置 `autodeploy` 命令，进入容器后即可查看/修改设置与提交历史：
+
+```bash
+docker exec -it autodeploy autodeploy show            # 设置 + 最近提交 + 部署状态
+docker exec -it autodeploy autodeploy log 20          # 当前项目最近 20 条提交
+docker exec -it autodeploy autodeploy set DEPLOY_BRANCH 'main,release/*'
+docker exec -it autodeploy autodeploy help
+```
+
+| 命令 | 说明 |
+| --- | --- |
+| `autodeploy show` | 显示设置（REPO_NAME/DEPLOY_BRANCH/配置名/端口/用户名）、裸仓库最近提交、各应用部署状态 |
+| `autodeploy set <KEY> <VALUE>` | 修改设置，写入 `/data/settings.env` 并即时更新 `/etc/autodeploy/env` |
+| `autodeploy log [N]` | 查看当前项目提交历史（默认 10 条，含分支装饰） |
+
+- 可修改 KEY：`REPO_NAME`、`DEPLOY_BRANCH`、`AUTODEPLOY_CONFIG_NAME`；
+- 修改对下一次 `git push` 生效，并持久化到 `/data/settings.env`，容器重建后由入口脚本重新加载；
+- `REPO_NAME` 只改变部署目录/默认应用名，不会重命名已存在的裸仓库。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
