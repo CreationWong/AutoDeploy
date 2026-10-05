@@ -1,0 +1,12 @@
+-----BEGIN [A-Z ]*PRIVATE KEY-----
+AKIA[0-9A-Z]{16}
+gh[pousr]_[A-Za-z0-9]{36,}
+github_pat_[A-Za-z0-9_]{60,}
+xox[baprs]-[A-Za-z0-9-]{10,}
+AIza[0-9A-Za-z_-]{35}
+sk_live_[0-9A-Za-z]{20,}
+eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}
+(https?|ftp|ssh|git|smtp|ldap)://[^/[:space:]:]+:[^/[:space:]@]+@
+(postgres|postgresql|mysql|mongodb|redis|amqp)://[^:]+:[^@]+@
+(password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[[:space:]]*[:=][[:space:]]*["'][^"']{8,}
+"private_key_id"[[:space:]]*:
