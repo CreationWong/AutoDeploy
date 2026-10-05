@@ -18,4 +18,4 @@
 
 ## 安全审计
 
-需要对代码库做安全审计/漏洞排查时，加载 `security-audit` skill 并按其流程执行。
+需要对代码库做安全审计/漏洞排查时，加载 `security-audit` skill 并按其流程执行。其 `validate-findings.cjs` / `validate-coverage-ledger.cjs` 需要 Node，容器默认未安装，建议在宿主机运行审计。

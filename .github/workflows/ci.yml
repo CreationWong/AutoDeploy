@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main, Dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash 语法检查
+        run: |
+          for f in entrypoint.sh scripts/autodeploy scripts/autodeploy-deploy scripts/post-receive; do
+            bash -n "$f"
+          done
+      - name: shellcheck
+        run: shellcheck -S error entrypoint.sh scripts/autodeploy scripts/autodeploy-deploy scripts/post-receive
+
+  secret-scan-selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: sensitive-info-check 正/负向自检
+        run: |
+          set -e
+          tmp="$(mktemp -d)"
+          git -C "$tmp" init -q -b main
+          git -C "$tmp" config user.email ci@example.com
+          git -C "$tmp" config user.name ci
+
+          printf 'hello\n' > "$tmp/ok.txt"
+          git -C "$tmp" add ok.txt
+          (cd "$tmp" && bash "$GITHUB_WORKSPACE/.opencode/skills/sensitive-info-check/scan.sh" --staged)
+
+          fake="AKIA$(printf 'A%.0s' $(seq 1 16))"
+          printf 'aws_key = %s\n' "$fake" > "$tmp/leak.txt"
+          git -C "$tmp" add leak.txt
+          if (cd "$tmp" && bash "$GITHUB_WORKSPACE/.opencode/skills/sensitive-info-check/scan.sh" --staged); then
+            echo "scan.sh 未拦截假密钥"
+            exit 1
+          fi
+          echo "selftest ok"

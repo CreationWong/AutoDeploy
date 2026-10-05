@@ -2,9 +2,18 @@
 AKIA[0-9A-Z]{16}
 gh[pousr]_[A-Za-z0-9]{36,}
 github_pat_[A-Za-z0-9_]{60,}
+glpat-[A-Za-z0-9_-]{20,}
+npm_[A-Za-z0-9]{36}
+pypi-[A-Za-z0-9_-]{20,}
+dckr_pat_[A-Za-z0-9_-]{20,}
 xox[baprs]-[A-Za-z0-9-]{10,}
+xapp-[A-Za-z0-9-]{10,}
 AIza[0-9A-Za-z_-]{35}
 sk_live_[0-9A-Za-z]{20,}
+SG\.[A-Za-z0-9_-]{20,}
+SK[0-9a-fA-F]{32}
+AccountKey=[A-Za-z0-9+/=]{40,}
+Bearer [A-Za-z0-9._-]{20,}
 eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}
 (https?|ftp|ssh|git|smtp|ldap)://[^/[:space:]:]+:[^/[:space:]@]+@
 (postgres|postgresql|mysql|mongodb|redis|amqp)://[^:]+:[^@]+@
