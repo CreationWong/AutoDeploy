@@ -28,6 +28,7 @@ fi
 mkdir -p "$DATA_DIR"/{git-home,deploy,state,logs,ssh} \
          /etc/autodeploy /etc/supervisor/conf.d /var/log/autodeploy /var/log/supervisor /run/sshd
 chmod 755 /run/sshd
+find "$DATA_DIR/deploy/.versions" -type d -name '.staging-*' -exec rm -rf {} + 2>/dev/null || true
 mkdir -p /run/fcgiwrap
 rm -f /run/fcgiwrap/socket
 chown "$SSH_USER:$SSH_USER" /run/fcgiwrap
@@ -39,7 +40,8 @@ fi
 
 GIT_HOME="$DATA_DIR/git-home"
 mkdir -p "$GIT_HOME/.ssh"
-chown -R "$SSH_USER:$SSH_USER" "$DATA_DIR" "$GIT_HOME"
+chown "$SSH_USER:$SSH_USER" "$DATA_DIR"
+chown -R "$SSH_USER:$SSH_USER" "$GIT_HOME"
 chmod 700 "$GIT_HOME" "$GIT_HOME/.ssh"
 
 for key_type in rsa ed25519; do
@@ -118,6 +120,23 @@ for env_snap in "$DATA_DIR"/state/*/environment.yml; do
   [ -e "$env_snap" ] || continue
   RESTORE_ENV=1
   break
+done
+for state_file in "$DATA_DIR"/state/*/deploy.json; do
+  [ -f "$state_file" ] || continue
+  if [ "$(yq -r '.status // ""' "$state_file" 2>/dev/null || true)" != "deploying" ]; then
+    continue
+  fi
+  state_name="$(basename "$(dirname "$state_file")")"
+  link="$DATA_DIR/deploy/${REPO_NAME}"
+  prev="$(cat "$DATA_DIR/state/${state_name}/previous.commit" 2>/dev/null || true)"
+  prev_dir="$DATA_DIR/deploy/.versions/${REPO_NAME}/${prev}"
+  if [ -n "$prev" ] && [ -d "$prev_dir" ]; then
+    warn "检测到中断的部署，回退到上一版本: ${prev:0:12}"
+    ln -sfn "$prev_dir" "${link}.new" 2>/dev/null && mv -Tf "${link}.new" "$link" 2>/dev/null
+    yq -i '.status = "failed" | .message = "部署中断，已回退到上一版本"' "$state_file" 2>/dev/null || true
+  else
+    warn "检测到中断的部署且无上一版本: $REPO_NAME（保留当前目录，需重新推送）"
+  fi
 done
 if [ "$RESTORE_ENV" = "1" ] && [ -f "$DATA_DIR/deploy/${REPO_NAME}/${CONFIG_NAME}" ]; then
   if ! /usr/local/bin/autodeploy-deploy --prepare-env "$DATA_DIR/deploy/${REPO_NAME}"; then

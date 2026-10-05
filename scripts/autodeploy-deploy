@@ -18,6 +18,7 @@ STATE_DIR=""
 LOG_FILE=""
 CFG=""
 TARGET=""
+TARGET_REAL=""
 RUN_DIR=""
 PREV_BACKUP=""
 PREV_COMMIT=""
@@ -47,6 +48,17 @@ warn() {
   printf '%s\n' "$line" >&2
   if [ -n "$LOG_FILE" ]; then
     printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$LOG_FILE" 2>/dev/null || true
+  fi
+}
+
+rotate_log() {
+  local max=10485760 size
+  if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
+    return 0
+  fi
+  size="$(stat -c%s "$LOG_FILE" 2>/dev/null || printf '0')"
+  if [ "$size" -gt "$max" ]; then
+    mv -f "$LOG_FILE" "$LOG_FILE.1"
   fi
 }
 
@@ -131,9 +143,6 @@ yq_list() {
 
 cleanup_run_dir() {
   rm -rf "$RUN_DIR"
-  if [ -n "${TARGET:-}" ]; then
-    rm -rf "${TARGET}.old"
-  fi
 }
 
 setup_run_dir() {
@@ -317,6 +326,7 @@ restore_environment() {
   STATE_DIR="$DATA_DIR/state/$STATE_NAME"
   mkdir -p "$STATE_DIR" "$DATA_DIR/logs/$STATE_NAME"
   LOG_FILE="$DATA_DIR/logs/$STATE_NAME/deploy.log"
+  rotate_log
   setup_run_dir
   prepare_environment
 }
@@ -462,7 +472,7 @@ run_workflow_job() {
       wd_rel="$default_wd"
     fi
     if [ -n "$wd_rel" ]; then
-      step_dir="$(realpath -m -- "$TARGET/$wd_rel")"
+      step_dir="$(realpath -ms -- "$TARGET/$wd_rel")"
       case "$step_dir" in
         "$TARGET"|"$TARGET"/*) ;;
         *) die "workflow $wf_name / $job / $label: working-directory 必须位于项目目录内: $wd_rel" ;;
@@ -605,7 +615,7 @@ deploy_process() {
   local state_dir="$STATE_DIR" header start_sh supervisor_conf
 
   workdir_rel="$(cfg_str '.workdir' '.')"
-  workdir="$(realpath -m -- "$TARGET/$workdir_rel" 2>/dev/null || printf '%s' "$TARGET/$workdir_rel")"
+  workdir="$(realpath -ms -- "$TARGET/$workdir_rel" 2>/dev/null || printf '%s' "$TARGET/$workdir_rel")"
   case "$workdir" in
     "$TARGET"|"$TARGET"/*) ;;
     *) log "错误: workdir 必须位于项目目录内: $workdir_rel"; return 1 ;;
@@ -713,7 +723,7 @@ deploy_compose() {
     log "错误: 未找到 compose 文件（可通过 file 指定）"
     return 1
   fi
-  path="$(realpath -m -- "$TARGET/$file")"
+  path="$(realpath -ms -- "$TARGET/$file")"
   case "$path" in
     "$TARGET"/*) ;;
     *) log "错误: compose 文件必须位于项目目录内: $file"; return 1 ;;
@@ -735,7 +745,7 @@ deploy_compose() {
     args+=(--env-file "$env_file")
   fi
 
-  args+=(up -d)
+  args+=(up -d --remove-orphans)
   if [ "$(cfg_str '.build' 'true')" = "true" ]; then
     args+=(--build)
   fi
@@ -822,12 +832,13 @@ main() {
     return 0
   fi
 
-  TARGET="$(realpath -m -- "$1")"
+  TARGET="$(realpath -ms -- "$1")"
+  TARGET_REAL="$(realpath -m -- "$TARGET")"
   STATE_COMMIT="${2:-}"
   STATE_BRANCH="${3:-}"
 
   local deploy_root
-  deploy_root="$(realpath -m -- "$DATA_DIR/deploy")"
+  deploy_root="$(realpath -ms -- "$DATA_DIR/deploy")"
   case "$TARGET" in
     "$deploy_root"|"$deploy_root"/*) ;;
     *) die "拒绝部署: 目录必须位于 $deploy_root 下" ;;
@@ -863,7 +874,13 @@ main() {
   local log_dir="$DATA_DIR/logs/$name"
   mkdir -p "$STATE_DIR" "$log_dir"
   LOG_FILE="$log_dir/deploy.log"
+  rotate_log
   setup_run_dir
+
+  exec 9>"$STATE_DIR/.deploy.lock"
+  if ! flock -w 300 9; then
+    die "等待部署锁超时（另一部署可能仍在进行）: $name"
+  fi
 
   backup_previous
 
@@ -878,7 +895,7 @@ main() {
   fi
 
   run_workflows
-  chown -R git:git "$TARGET" 2>/dev/null || true
+  chown -R git:git "$TARGET_REAL" 2>/dev/null || true
 
   cleanup_previous "$STATE_TYPE" "$name"
 
@@ -909,7 +926,7 @@ main() {
     fi
   fi
 
-  chown -R git:git "$TARGET" 2>/dev/null || true
+  chown -R git:git "$TARGET_REAL" 2>/dev/null || true
   if [ "$ROLLING_BACK" != "1" ]; then
     write_status "success"
   fi
@@ -917,11 +934,12 @@ main() {
 }
 
 backup_previous() {
-  local status prev_commit old_dir
+  local status prev_commit prev_dir
   PREV_COMMIT=""
   PREV_BRANCH=""
   PREV_TYPE=""
   PREV_BACKUP=""
+  rm -f "$STATE_DIR/previous.commit"
   if [ ! -f "$STATE_DIR/deploy.json" ]; then
     return 0
   fi
@@ -934,26 +952,28 @@ backup_previous() {
   if [ -z "$prev_commit" ] || [ "$prev_commit" = "$STATE_COMMIT" ]; then
     return 0
   fi
-  old_dir="${TARGET}.old"
-  if [ ! -d "$old_dir" ]; then
-    warn "未找到上一版本目录 ${old_dir}，失败时将无法自动回退"
+  prev_dir="$(dirname "$TARGET_REAL")/$prev_commit"
+  if [ ! -d "$prev_dir" ]; then
+    warn "未找到上一版本目录 ${prev_dir}，失败时将无法自动回退"
     return 0
   fi
   PREV_COMMIT="$prev_commit"
   PREV_BRANCH="$(yq -r '.branch // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
-  PREV_BACKUP="$old_dir"
+  PREV_BACKUP="$prev_dir"
+  printf '%s\n' "$prev_commit" > "$STATE_DIR/previous.commit"
   log "已记录上一可用版本: ${prev_commit:0:12}"
 }
 
 deploy_previous_version() {
-  local commit="$1"
-  rm -rf "$TARGET"
-  if mv "$PREV_BACKUP" "$TARGET" 2>/dev/null; then
+  local commit="$1" link="$DATA_DIR/deploy/$REPO_NAME"
+  if [ -d "$PREV_BACKUP" ]; then
+    ln -sfn "$PREV_BACKUP" "${link}.new" 2>/dev/null && mv -Tf "${link}.new" "$link" 2>/dev/null
+    TARGET_REAL="$PREV_BACKUP"
+    chown -R git:git "$TARGET_REAL" 2>/dev/null || true
     log "已回退到上一可用版本: ${commit:0:12}"
   else
     log "警告: 回退到上一版本失败"
   fi
-  chown -R git:git "$TARGET" 2>/dev/null || true
 }
 
 rollback_if_possible() {
@@ -964,8 +984,11 @@ rollback_if_possible() {
     STATE_COMMIT="$PREV_COMMIT"
     STATE_BRANCH="$PREV_BRANCH"
     deploy_previous_version "$PREV_COMMIT"
+    if ! ( prepare_environment ); then
+      log "警告: 回退版本的基础环境恢复失败，继续尝试启动"
+    fi
     STATE_TYPE="$(cfg_str '.type' 'process')"
-    if start_service; then
+    if start_service && health_check; then
       FAILED_COMMIT="$failed_commit"
       mark_failed "$failed_commit" "$failed_branch" "$failure" "true"
       write_status "success" "已回退到 ${PREV_COMMIT:0:12}"
@@ -973,18 +996,29 @@ rollback_if_possible() {
       return 0
     fi
     FAILED_COMMIT=""
-    log "警告: 回退版本未能启动，服务可能不可用"
+    log "警告: 回退版本未能启动或健康检查失败，服务可能不可用"
     return 1
   fi
   log "没有可用的上一版本，停止部署"
-  if [ "$STATE_TYPE" = "docker-compose" ] && [ -d "$TARGET" ]; then
+  local link="$DATA_DIR/deploy/$REPO_NAME"
+  if [ "$STATE_TYPE" = "docker-compose" ] && [ -d "$TARGET_REAL" ]; then
     local project="autodeploy-$(printf '%s' "$STATE_NAME" | sed 's/[^A-Za-z0-9_.-]/-/g')"
-    if ! (cd "$TARGET" && docker compose -p "$project" down --remove-orphans) 2>&1 | tee -a "$LOG_FILE"; then
+    if ! (cd "$TARGET_REAL" && docker compose -p "$project" down --remove-orphans) 2>&1 | tee -a "$LOG_FILE"; then
       log "警告: 停止失败的 compose 服务失败"
     fi
   fi
-  rm -rf "$TARGET"
-  log "已移除失败的部署目录: $TARGET"
+  if [ "$STATE_TYPE" = "process" ]; then
+    local program="autodeploy-$(printf '%s' "$STATE_NAME" | sed 's/[^A-Za-z0-9_-]/-/g')"
+    rm -f "$SUPERVISOR_CONF_DIR/$program.conf" "$STATE_DIR/supervisor.conf" "$STATE_DIR/start.sh"
+    supervisorctl_log stop "$program"
+    supervisorctl_log reread
+    supervisorctl_log update
+  fi
+  if [ -L "$link" ]; then
+    rm -f "$link"
+  fi
+  rm -rf "$TARGET_REAL"
+  log "已移除失败的部署目录: $TARGET_REAL"
   return 1
 }
 

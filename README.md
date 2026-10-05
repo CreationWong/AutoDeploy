@@ -15,7 +15,8 @@ git push (SSH / HTTP)
                          ├──> 裸仓库 /data/git-home/app.git
   nginx + fcgiwrap ──────┘        │ post-receive 钩子
                                   ▼
-                      导出代码 -> /data/deploy/app
+       导出代码 -> /data/deploy/.versions/app/<commit>
+         deploy/app 符号链接 -> 当前版本
                                   │
                     扫描 AutoDeploy.config.yaml
                       │ 无                    │ 有
@@ -32,7 +33,7 @@ git push (SSH / HTTP)
         进程常驻在本容器内                          （需挂载 /var/run/docker.sock）
 ```
 
-部署状态写入 `/data/state/<name>/deploy.json`（`success` / `failed`），部署失败时旧服务继续运行。
+部署状态写入 `/data/state/<name>/deploy.json`（`success` / `failed`），部署失败会自动回退到上一可用版本（见"部署失败自动回退"）。
 
 ## 快速开始
 
@@ -303,13 +304,13 @@ jobs:
 
 ## 部署失败自动回退
 
-每次部署前会把当前生效（`status: success`）的版本备份到临时目录。部署失败（进程未起、compose 失败、健康检查未通过、`after.sh` 失败）时：
+每个提交部署到独立版本目录 `deploy/.versions/<repo>/<commit>`，`deploy/<repo>` 是指向当前版本的符号链接，切换用原子 `rename` 完成（不会出现目录空窗）。部署前从 `deploy.json` 记录上一可用版本，失败（进程未起、compose 失败、健康检查未通过、`after.sh` 失败）时：
 
 1. 先把失败的提交写入 `state/<name>/failed.json` 并在 `deploy.json.failed_commit` 记录（"标记这个提交"）；
-2. 存在上一可用版本 → 用备份目录替换工作目录，重新拉起该版本并写回 `success`（`failed_commit` 仍指向失败提交），服务保持可用；
-3. 没有上一可用版本（首次部署）→ 移除失败的工作目录、停止部署，仅保留失败标记。
+2. 存在上一可用版本 → 把 `deploy/<repo>` 符号链接原子切回上一版本目录，重放旧配置的 `environment`，重新拉起该版本并**再跑一次健康检查**，通过后写回 `success`（`failed_commit` 仍指向失败提交），服务保持可用；
+3. 没有上一可用版本（首次部署）→ 停止失败的服务（process 停 supervisor、compose 停项目）、移除失败版本目录与符号链接，仅保留失败标记。
 
-`type: process` 是原地更新，回退可直接恢复；`docker-compose` 回退会重建 compose 栈（同样需要 Docker）。`autodeploy show` 会显示 `failed_commit` 与 `failed.json` 标记。
+回退只是重指符号链接，不需要复制代码；`docker-compose` 回退会重建 compose 栈并清理孤儿容器（同样需要 Docker）。容器重启时若发现 `deploy.json` 仍为 `deploying`（部署中途被杀），入口脚本会按 `state/<name>/previous.commit` 把符号链接切回上一版本。`autodeploy show` 会显示 `failed_commit` 与 `failed.json` 标记。
 
 ## 容器内管理命令
 
@@ -321,6 +322,8 @@ docker exec -it autodeploy autodeploy log 20             # 当前项目最近 20
 docker exec -it autodeploy autodeploy set DEPLOY_BRANCH 'main,release/*'
 docker exec -it autodeploy autodeploy set DEPLOY_TAG 'v*'
 docker exec -it autodeploy autodeploy deploy v1.2.0      # 手动部署指定 ref
+docker exec -it autodeploy autodeploy retry              # 重跑上次成功提交
+docker exec -it autodeploy autodeploy logs my-app 100    # 查看应用日志
 docker exec -it autodeploy autodeploy help
 ```
 
@@ -329,6 +332,8 @@ docker exec -it autodeploy autodeploy help
 | `autodeploy show` | 显示设置（REPO_NAME/触发规则/配置名/端口/用户名）、裸仓库最近提交、各应用部署状态 |
 | `autodeploy set <KEY> <VALUE>` | 修改默认设置，写入 `/data/settings.env` 并即时更新 `/etc/autodeploy/env` |
 | `autodeploy deploy <branch\|tag\|commit>` | 手动部署指定 ref（可对历史提交/标签，用于回滚） |
+| `autodeploy retry` | 重新部署上次成功提交 |
+| `autodeploy logs [name] [N]` | 查看应用日志（deploy.log / app.log / app.err.log，默认第一个应用、50 行） |
 | `autodeploy log [N]` | 查看当前项目提交历史（默认 10 条，含分支装饰） |
 
 - 可修改 KEY：`REPO_NAME`、`DEPLOY_BRANCH`、`DEPLOY_TAG`、`DEPLOY_TAG_MODE`、`AUTODEPLOY_CONFIG_NAME`；
@@ -367,14 +372,16 @@ docker exec -it autodeploy autodeploy help
 ├── git-home/app.git                  # 裸仓库
 ├── git-home/.ssh/authorized_keys
 ├── htpasswd                          # HTTP Basic 凭据
-├── deploy/app                        # 最近一次推送的代码工作目录
+├── deploy/app                        # current 符号链接 -> .versions/<repo>/<commit>
+├── deploy/.versions/<repo>/<commit>  # 每个版本的代码（保留最近 5 个）
 ├── state/<name>/deploy.json          # 最近部署状态（含 failed_commit）
 ├── state/<name>/failed.json          # 最近一次失败的提交标记
+├── state/<name>/previous.commit      # 上一可用版本 commit（崩溃恢复用）
 ├── state/<name>/environment.yml      # 当前生效的 environment 快照
 ├── state/<name>/environment.boot     # 上次构建环境的容器实例 ID
 ├── state/<name>/start.sh             # process 类型启动脚本
 ├── state/<name>/supervisor.conf
-├── logs/<name>/deploy.log            # 部署日志
+├── logs/<name>/deploy.log            # 部署日志（超 10MB 轮转为 deploy.log.1）
 ├── logs/<name>/app.log               # 应用 stdout
 └── logs/<name>/app.err.log           # 应用 stderr
 ```
@@ -384,8 +391,9 @@ docker exec -it autodeploy autodeploy help
 - SSH 只允许 `git` 用户、仅公钥认证，shell 限制为 `git-shell`；
 - `git` 用户只能通过 sudo 免密执行 `/usr/local/bin/autodeploy-deploy`；
 - 部署脚本校验目标目录必须位于 `/data/deploy` 内；
-- 能推送到该仓库的人等于能在容器内以 `git` 用户执行安装/构建/启动命令，请妥善保管推送凭据；
-- 挂载 `docker.sock` 意味着容器可控制宿主机 Docker，仅在不跑 `docker-compose` 类型时移除；
+- **推送权限 ≈ 容器内 root**：`.AutoDeploy/before.sh`、workflows、`environment.setup` 均以 root 执行，`git` 用户可免密 `sudo autodeploy-deploy`，且 `process` 类型默认就以 `git` 运行。能推送到该仓库的人可在容器内以 root 执行任意代码，请把推送凭据当 root 凭据保管；
+- **挂载 `docker.sock` ≈ 宿主机 root**：仅当需要 `type: docker-compose` 时挂载，否则从 `docker-compose.yml` 移除该 volume（或用 profile 控制）；
+- HTTP 默认是明文 Basic 认证，生产务必经 TLS 网关（见"方式三"），不要把凭据直接暴露在公网；
 - HTTP 密码由 `/dev/urandom` 生成（真随机、无固定种子），仅首次启动打印并持久化在 `/data/htpasswd`；
 - SSH 主机密钥首次启动随机生成并持久化在 `/data/ssh`，不烤进镜像。
 
@@ -397,6 +405,7 @@ docker exec -it autodeploy autodeploy help
 - **容器重建后部署还在吗？** 在。裸仓库、工作目录、supervisor 配置、日志、基础环境快照都持久化在 `/data`，入口脚本自动恢复。
 - **应用端口怎么暴露？** `docker-compose` 类型由应用 compose 的 `ports:` 发布；`process` 类型加入外部网络后用 nginx 网关代理，均不需要改 AutoDeploy 自身。
 
-## 开发辅助（Ponytail）
+## 开发辅助
 
-`opencode.json` 已声明 [ponytail](https://github.com/DietrichGebert/ponytail) 插件，opencode 启动时自动安装并按 YAGNI 规则约束代码改动。默认强度 `full`，可用 `/ponytail lite|full|ultra|off` 切换。修改配置后需重启 opencode 生效。
+- `opencode.json` 已声明 [ponytail](https://github.com/DietrichGebert/ponytail) 插件，opencode 启动时自动安装并按 YAGNI 规则约束代码改动。默认强度 `full`，可用 `/ponytail lite|full|ultra|off` 切换。修改配置后需重启 opencode 生效。
+- `.opencode/skills/` 内置两个 skill：`sensitive-info-check`（提交/推送前扫描密钥与隐私信息，可用 `scan.sh --staged|--outgoing`）与 `security-audit`（Cloudflare 多阶段安全审计，校验器需要 Node）。

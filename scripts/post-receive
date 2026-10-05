@@ -156,7 +156,9 @@ fi
 
 log "开始处理 $deploy_branch ($deploy_ref)"
 mkdir -p "$DEPLOY_ROOT"
-staging="$(mktemp -d "$DEPLOY_ROOT/.staging-${REPO_NAME}.XXXXXX")"
+VERSIONS_ROOT="$DEPLOY_ROOT/.versions/$REPO_NAME"
+mkdir -p "$VERSIONS_ROOT"
+staging="$(mktemp -d "$VERSIONS_ROOT/.staging-XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
 
 if ! git archive "$deploy_ref" | tar -x -C "$staging"; then
@@ -170,12 +172,23 @@ if [ ! -f "$staging/$CONFIG_NAME" ]; then
 fi
 
 log "找到 $CONFIG_NAME，开始部署"
-if [ -d "$TARGET" ]; then
-  rm -rf "${TARGET}.old"
-  mv "$TARGET" "${TARGET}.old"
-fi
-mv "$staging" "$TARGET"
+vdir="$VERSIONS_ROOT/$deploy_ref"
+rm -rf "$vdir"
+mv "$staging" "$vdir"
 trap - EXIT
-chown -R git:git "$TARGET"
+chown -R git:git "$vdir"
+
+# 旧布局（真实目录）迁移为版本目录，避免 mv -T 覆盖目录失败
+if [ -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
+  rm -rf "$VERSIONS_ROOT/legacy"
+  mv "$TARGET" "$VERSIONS_ROOT/legacy"
+fi
+
+# 原子切换 current 符号链接
+ln -sfn "$vdir" "${TARGET}.new"
+mv -Tf "${TARGET}.new" "$TARGET"
+
+# 只保留最近 5 个版本
+ls -1dt "$VERSIONS_ROOT"/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
 
 exec sudo -n /usr/local/bin/autodeploy-deploy "$TARGET" "$deploy_ref" "$deploy_branch"

@@ -172,6 +172,51 @@ cmd_deploy() {
   GIT_DIR="$repo_dir" /usr/local/bin/autodeploy-post-receive --ref "$ref"
 }
 
+cmd_logs() {
+  load_settings
+  local name="${1:-}" n="${2:-50}" f
+  case "$n" in ''|*[!0-9]*) n=50 ;; esac
+  if [ -z "$name" ]; then
+    for f in "$DATA_DIR"/state/*/deploy.json; do
+      [ -f "$f" ] || continue
+      name="$(yq -r '.name // ""' "$f" 2>/dev/null || true)"
+      [ -n "$name" ] && break
+    done
+  fi
+  if [ -z "$name" ]; then
+    echo "未找到应用，用法: autodeploy logs <name> [N]" >&2
+    return 1
+  fi
+  local dir="$DATA_DIR/logs/$name"
+  if [ ! -d "$dir" ]; then
+    echo "日志目录不存在: $dir" >&2
+    return 1
+  fi
+  for f in "$dir"/*.log; do
+    [ -f "$f" ] || continue
+    echo "==> $f (最近 $n 行) <=="
+    tail -n "$n" "$f"
+  done
+}
+
+cmd_retry() {
+  load_settings
+  local commit="" f
+  for f in "$DATA_DIR"/state/*/deploy.json; do
+    [ -f "$f" ] || continue
+    if [ "$(yq -r '.status // ""' "$f" 2>/dev/null || true)" = "success" ]; then
+      commit="$(yq -r '.commit // ""' "$f" 2>/dev/null || true)"
+      [ -n "$commit" ] && break
+    fi
+  done
+  if [ -z "$commit" ]; then
+    echo "没有可重试的成功提交" >&2
+    return 1
+  fi
+  echo "重新部署上次成功提交: ${commit:0:12}"
+  cmd_deploy "$commit"
+}
+
 cmd_help() {
   cat <<'EOF'
 AutoDeploy 管理命令
@@ -181,6 +226,8 @@ AutoDeploy 管理命令
   show                      查看当前设置、裸仓库最近提交与部署状态
   set <KEY> <VALUE>         修改设置（写入 /data/settings.env，重启后保留）
   deploy <branch|tag|commit> 手动部署指定 ref（可用于回滚）
+  retry                     重新部署上次成功提交
+  logs [name] [N]           查看应用日志（默认第一个应用，最近 50 行）
   log [N]                   查看当前项目提交历史（默认最近 10 条）
   help                      显示本帮助
 
@@ -213,6 +260,11 @@ case "${1:-help}" in
   deploy)
     shift
     cmd_deploy "${1:-}"
+    ;;
+  retry|redeploy) cmd_retry ;;
+  logs)
+    shift
+    cmd_logs "${1:-}" "${2:-50}"
     ;;
   help|-h|--help|"") cmd_help ;;
   *)
