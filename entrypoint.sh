@@ -88,6 +88,8 @@ else
 fi
 chown root:"$SSH_USER" "$HTPASSWD"
 chmod 640 "$HTPASSWD"
+# 推送凭据不能继承到 fcgiwrap 或业务进程。
+unset AUTODEPLOY_HTTP_PASSWORD RANDOM_PASSWORD
 
 {
   printf 'REPO_NAME=%q\n' "$REPO_NAME"
@@ -123,19 +125,63 @@ for env_snap in "$DATA_DIR"/state/*/environment.yml; do
 done
 for state_file in "$DATA_DIR"/state/*/deploy.json; do
   [ -f "$state_file" ] || continue
-  if [ "$(yq -r '.status // ""' "$state_file" 2>/dev/null || true)" != "deploying" ]; then
+  state_dir="$(dirname "$state_file")"
+  if [ "$(yq -r '.status // ""' "$state_file" 2>/dev/null || true)" != "deploying" ] && [ ! -f "$state_dir/pending.json" ]; then
     continue
   fi
+  attempt_file="$state_file"
+  [ ! -f "$state_dir/pending.json" ] || attempt_file="$state_dir/pending.json"
   state_name="$(basename "$(dirname "$state_file")")"
   link="$DATA_DIR/deploy/${REPO_NAME}"
   prev="$(cat "$DATA_DIR/state/${state_name}/previous.commit" 2>/dev/null || true)"
-  prev_dir="$DATA_DIR/deploy/.versions/${REPO_NAME}/${prev}"
+  previous="$state_dir/previous.json"
+  prev_dir=""
+  runtime=""
+  if [ -f "$previous" ]; then
+    prev_dir="$(yq -r '.directory // ""' "$previous")"
+    runtime="$(yq -r '.runtime_dir // ""' "$previous")"
+  fi
+  [ -n "$prev_dir" ] || prev_dir="$DATA_DIR/deploy/.versions/${REPO_NAME}/${prev}"
   if [ -n "$prev" ] && [ -d "$prev_dir" ]; then
     warn "检测到中断的部署，回退到上一版本: ${prev:0:12}"
-    ln -sfn "$prev_dir" "${link}.new" 2>/dev/null && mv -Tf "${link}.new" "$link" 2>/dev/null
-    yq -i '.status = "failed" | .message = "部署中断，已回退到上一版本"' "$state_file" 2>/dev/null || true
+    ln -sfn "$prev_dir" "${link}.new"
+    mv -Tf "${link}.new" "$link"
+    previous_type="$(yq -r '.type // "process"' "$previous" 2>/dev/null || printf process)"
+    failed_dir="$(yq -r '.directory // ""' "$attempt_file")"
+    if [ "$previous_type" = "process" ] && [ -d "$failed_dir" ]; then
+      /usr/local/bin/autodeploy-deploy --stop-compose "$failed_dir" || warn "停止失败 compose 服务失败"
+    fi
+    if [ "$previous_type" = "process" ]; then
+      if [ -f "$runtime/start.sh" ] && [ -f "$runtime/supervisor.conf" ]; then
+        cp -p "$runtime/start.sh" "$state_dir/start.sh"
+        cp -p "$runtime/supervisor.conf" "$state_dir/supervisor.conf"
+        ln -sf "$state_dir/supervisor.conf" "/etc/supervisor/conf.d/autodeploy-${state_name}.conf"
+      else
+        warn "缺少上一版本启动快照，禁用自动启动，需手动重新部署: $state_name"
+        rm -f "$state_dir/supervisor.conf" "/etc/supervisor/conf.d/autodeploy-${state_name}.conf"
+      fi
+    else
+      rm -f "$state_dir/supervisor.conf" "$state_dir/start.sh" "/etc/supervisor/conf.d/autodeploy-${state_name}.conf"
+      if ! /usr/local/bin/autodeploy-deploy --restore-compose "$prev_dir"; then
+        warn "上一版本 compose 恢复失败: $state_name"
+      fi
+    fi
+    failed_commit="$(yq -r '.commit // ""' "$attempt_file")"
+    if [ -f "$previous" ]; then
+      APP_FAILED_COMMIT="$failed_commit" yq '.status = "failed" | .failed_commit = strenv(APP_FAILED_COMMIT) | .message = "部署中断，已恢复上一版本配置，需检查服务状态"' \
+        "$previous" > "$state_file.tmp"
+      mv "$state_file.tmp" "$state_file"
+    fi
+    rm -f "$state_dir/pending.json"
   else
-    warn "检测到中断的部署且无上一版本: $REPO_NAME（保留当前目录，需重新推送）"
+    warn "检测到中断的部署且无上一版本，禁用失败服务: $REPO_NAME"
+    failed_dir="$(yq -r '.directory // ""' "$attempt_file")"
+    if [ -d "$failed_dir" ]; then
+      /usr/local/bin/autodeploy-deploy --stop-compose "$failed_dir" || warn "停止失败 compose 服务失败"
+    fi
+    rm -f "$state_dir/supervisor.conf" "$state_dir/start.sh" "/etc/supervisor/conf.d/autodeploy-${state_name}.conf"
+    yq -i '.status = "failed" | .message = "首次部署中断，服务已禁用，需重新部署"' "$state_file"
+    rm -f "$state_dir/pending.json"
   fi
 done
 if [ "$RESTORE_ENV" = "1" ] && [ -f "$DATA_DIR/deploy/${REPO_NAME}/${CONFIG_NAME}" ]; then

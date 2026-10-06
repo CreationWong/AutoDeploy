@@ -1,5 +1,5 @@
 #!/bin/bash
-set -uo pipefail
+set -euo pipefail
 
 HOOK_ENV="/etc/autodeploy/env"
 if [ -r "$HOOK_ENV" ]; then
@@ -172,23 +172,10 @@ if [ ! -f "$staging/$CONFIG_NAME" ]; then
 fi
 
 log "找到 $CONFIG_NAME，开始部署"
-vdir="$VERSIONS_ROOT/$deploy_ref"
-rm -rf "$vdir"
-mv "$staging" "$vdir"
+# 等待部署锁期间保持 staging 名称，避免被历史版本清理误删。
+vdir="$staging"
 trap - EXIT
 chown -R git:git "$vdir"
 
-# 旧布局（真实目录）迁移为版本目录，避免 mv -T 覆盖目录失败
-if [ -e "$TARGET" ] && [ ! -L "$TARGET" ]; then
-  rm -rf "$VERSIONS_ROOT/legacy"
-  mv "$TARGET" "$VERSIONS_ROOT/legacy"
-fi
-
-# 原子切换 current 符号链接
-ln -sfn "$vdir" "${TARGET}.new"
-mv -Tf "${TARGET}.new" "$TARGET"
-
-# 只保留最近 5 个版本
-ls -1dt "$VERSIONS_ROOT"/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
-
-exec sudo -n /usr/local/bin/autodeploy-deploy "$TARGET" "$deploy_ref" "$deploy_branch"
+# 切换、回退和清理均由部署程序在仓库锁内执行。
+exec sudo -n /usr/local/bin/autodeploy-deploy "$vdir" "$deploy_ref" "$deploy_branch"

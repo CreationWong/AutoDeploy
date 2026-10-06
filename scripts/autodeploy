@@ -202,7 +202,7 @@ cmd_logs() {
 cmd_retry() {
   load_settings
   local commit="" f
-  for f in "$DATA_DIR"/state/*/deploy.json; do
+  for f in "$DATA_DIR"/state/*/last-success.json "$DATA_DIR"/state/*/deploy.json; do
     [ -f "$f" ] || continue
     if [ "$(yq -r '.status // ""' "$f" 2>/dev/null || true)" = "success" ]; then
       commit="$(yq -r '.commit // ""' "$f" 2>/dev/null || true)"

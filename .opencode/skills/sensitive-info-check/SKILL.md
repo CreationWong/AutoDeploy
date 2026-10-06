@@ -19,6 +19,7 @@ description: Scan staged changes and outgoing commits for secrets, credentials, 
    - 提交前：`bash .opencode/skills/sensitive-info-check/scan.sh --staged`
    - 推送前：`bash .opencode/skills/sensitive-info-check/scan.sh --outgoing`（同时扫描提交信息）
    - 指定区间：`bash .opencode/skills/sensitive-info-check/scan.sh --range <a..b>`
+   - `--outgoing` / `--range` 逐提交检查新增行、合并提交差异、文件名和提交信息；无 upstream 时扫描 HEAD 全部可达历史。Git 查询失败返回 `2`，不得当作扫描通过。
 2. 脚本退出码 `1` = 命中疑似敏感信息；`0` = 干净；`2` = 用法/环境错误。
    - Windows 上 `bash` 可能不在 PATH，用 Git Bash：`& "$env:ProgramFiles\Git\bin\bash.exe" .opencode/skills/sensitive-info-check/scan.sh --staged`。
 3. 若有命中：**不要继续 commit/push**，逐条向用户报告文件、类型、脱敏后的证据，并给出处理建议。
@@ -57,6 +58,6 @@ description: Scan staged changes and outgoing commits for secrets, credentials, 
 
 ## 注意
 
-- 只扫描新增行（`git diff` 的 `+` 行），避免对既有内容反复告警；
+- 只扫描新增行，暂存区扫描 staged diff，推送前扫描每个待推送提交，避免中间提交的敏感信息被最终 diff 抵消；
 - 报告证据时脱敏（只显示前缀/长度），不要把完整密钥再次输出到日志或对话；
 - 本 skill 只做检查与阻止，不自动修改用户代码或历史，改动前先征得确认。

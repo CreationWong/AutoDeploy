@@ -26,6 +26,10 @@ PREV_BRANCH=""
 PREV_TYPE=""
 ROLLING_BACK=0
 START_FAILURE=""
+SERVICE_CHANGED=0
+TRANSACTION_ACTIVE=0
+CURRENT_LINK=""
+VERSIONS_ROOT=""
 
 if [ -r "$ENV_FILE" ]; then
   set -a
@@ -96,6 +100,7 @@ write_status() {
   if APP_NAME="$STATE_NAME" APP_TYPE="$STATE_TYPE" APP_STATUS="$status" APP_MESSAGE="$message" \
      APP_COMMIT="$STATE_COMMIT" APP_BRANCH="$STATE_BRANCH" APP_UPDATED_AT="$(date -Iseconds)" \
      APP_FAILED_COMMIT="${FAILED_COMMIT:-}" \
+     APP_DIRECTORY="$TARGET_REAL" \
      yq -n -o=json -P '
        .name = strenv(APP_NAME) |
        .type = strenv(APP_TYPE) |
@@ -104,12 +109,14 @@ write_status() {
        .commit = strenv(APP_COMMIT) |
        .branch = strenv(APP_BRANCH) |
        .updated_at = strenv(APP_UPDATED_AT) |
-       .failed_commit = strenv(APP_FAILED_COMMIT)
+       .failed_commit = strenv(APP_FAILED_COMMIT) |
+       .directory = strenv(APP_DIRECTORY)
      ' > "$STATE_DIR/deploy.json.tmp" 2>/dev/null; then
     mv "$STATE_DIR/deploy.json.tmp" "$STATE_DIR/deploy.json"
   else
     rm -f "$STATE_DIR/deploy.json.tmp"
     log "警告: 写入部署状态失败"
+    return 1
   fi
 }
 
@@ -142,7 +149,22 @@ yq_list() {
 }
 
 cleanup_run_dir() {
+  local status=$?
+  trap - EXIT
+  if [ "$status" -ne 0 ] && [ "$TRANSACTION_ACTIVE" = "1" ] && [ "$ROLLING_BACK" != "1" ]; then
+    local failed_commit="$STATE_COMMIT" failed_branch="$STATE_BRANCH"
+    mark_failed "$failed_commit" "$failed_branch" "部署中止" "false"
+    if ! rollback_if_possible "部署中止"; then
+      STATE_COMMIT="$failed_commit"
+      STATE_BRANCH="$failed_branch"
+      FAILED_COMMIT="$failed_commit"
+      write_status failed "部署中止，未能恢复上一版本"
+    else
+      rm -f "$STATE_DIR/pending.json"
+    fi
+  fi
   rm -rf "$RUN_DIR"
+  exit "$status"
 }
 
 setup_run_dir() {
@@ -165,9 +187,9 @@ run_script_as() {
   log "$desc"
   set +e
   if [ "$user" = "root" ]; then
-    /bin/bash "$script" 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+    /usr/bin/env -i PATH="$DEFAULT_PATH" HOME=/root LANG=C.UTF-8 /bin/bash "$script" 9>&- 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
   else
-    runuser -u "$user" -- /bin/bash "$script" 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
+    runuser -u "$user" -- /usr/bin/env -i PATH="$DEFAULT_PATH" LANG=C.UTF-8 /bin/bash "$script" 9>&- 2>&1 | tee -a "${LOG_FILE:-/dev/null}"
   fi
   status=${PIPESTATUS[0]}
   set -e
@@ -303,12 +325,15 @@ prepare_environment() {
 }
 
 restore_environment() {
-  local target="${1:-}"
+  local target="${1:-}" mode="${2:-environment}" deploy_root
   if [ -z "$target" ]; then
     printf '用法: autodeploy-deploy --prepare-env <项目目录>\n' >&2
     return 1
   fi
   TARGET="$(realpath -m -- "$target")"
+  TARGET_REAL="$TARGET"
+  deploy_root="$(realpath -m -- "$DATA_DIR/deploy")"
+  case "$TARGET" in "$deploy_root"/*) ;; *) die "拒绝恢复: 项目目录越界" ;; esac
   CFG="$TARGET/$CONFIG_NAME"
   if [ ! -f "$CFG" ]; then
     return 0
@@ -328,7 +353,15 @@ restore_environment() {
   LOG_FILE="$DATA_DIR/logs/$STATE_NAME/deploy.log"
   rotate_log
   setup_run_dir
-  prepare_environment
+  if [ "$mode" != "stop" ]; then
+    prepare_environment
+  fi
+  if [ "$STATE_TYPE" = "docker-compose" ]; then
+    case "$mode" in
+      compose) deploy_compose "$STATE_NAME" ;;
+      stop) PREV_TYPE=docker-compose; cleanup_previous process "$STATE_NAME" "$TARGET" ;;
+    esac
+  fi
 }
 
 run_project_hook() {
@@ -539,7 +572,7 @@ run_workflow_job() {
 }
 
 cleanup_previous() {
-  local current="$1" name="$2" prev="$PREV_TYPE" program project cf candidate
+  local current="$1" name="$2" directory="${3:-$PREV_BACKUP}" prev="$PREV_TYPE" program project cf candidate
   if [ -z "$prev" ] || [ "$prev" = "$current" ]; then
     return 0
   fi
@@ -554,13 +587,14 @@ cleanup_previous() {
   elif [ "$prev" = "docker-compose" ]; then
     project="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g')"
     log "停止旧的 compose 项目: $project"
-    cf="$(cfg_str '.file' '')"
-    [ -n "$cf" ] && cf="$TARGET/$cf"
+    [ -n "$directory" ] || directory="$TARGET"
+    cf="$(yq -r '.file // ""' "$directory/$CONFIG_NAME")"
+    [ -n "$cf" ] && cf="$directory/$cf"
     if [ -z "$cf" ] || [ ! -f "$cf" ]; then
       cf=""
       for candidate in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
-        if [ -f "$TARGET/$candidate" ]; then
-          cf="$TARGET/$candidate"
+        if [ -f "$directory/$candidate" ]; then
+          cf="$directory/$candidate"
           break
         fi
       done
@@ -569,6 +603,11 @@ cleanup_previous() {
     if [ -n "$cf" ]; then
       down_args+=(-f "$cf")
     fi
+    local old_env="$RUN_DIR/previous-compose.env"
+    yq -r '.env // {} | to_entries | .[] | .key + "=" + (.value | tostring)' \
+      "$directory/$CONFIG_NAME" > "$old_env"
+    chmod 600 "$old_env"
+    down_args+=(--env-file "$old_env")
     down_args+=(down --remove-orphans)
     if ! "${down_args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
       log "警告: 停止旧 compose 项目失败"
@@ -651,14 +690,17 @@ deploy_process() {
     printf '#!/bin/bash\nset -e\n'
     printf 'cd %q\n' "$workdir"
     printf 'export HOME=%q\n' "$user_home"
+    printf 'export LANG=C.UTF-8\n'
     printf 'export PATH=%q\n' "$DEFAULT_PATH"
     write_env_exports
   } > "$header"
   chown "$app_user" "$header"
   chmod 700 "$header"
 
-  run_phase '.install' "$app_user" "执行 install 命令" "$header" || return 1
-  run_phase '.build' "$app_user" "执行 build 命令" "$header" || return 1
+  if [ "$ROLLING_BACK" != "1" ]; then
+    run_phase '.install' "$app_user" "执行 install 命令" "$header" || return 1
+    run_phase '.build' "$app_user" "执行 build 命令" "$header" || return 1
+  fi
 
   start_sh="$state_dir/start.sh"
   {
@@ -673,7 +715,7 @@ deploy_process() {
   supervisor_conf="$state_dir/supervisor.conf"
   cat > "$supervisor_conf" <<EOF
 [program:$program]
-command=/bin/bash $start_sh
+command=/usr/bin/env -i /bin/bash $start_sh
 directory=$workdir
 user=$app_user
 autostart=true
@@ -742,6 +784,7 @@ deploy_compose() {
     while IFS= read -r -d '' kv; do
       printf '%s\n' "$kv" >> "$env_file"
     done < <(yq -r0 '.env // {} | to_entries | .[] | .key + "=" + (.value | tostring)' "$CFG")
+    chmod 600 "$env_file"
     args+=(--env-file "$env_file")
   fi
 
@@ -826,9 +869,11 @@ main() {
     printf '用法: autodeploy-deploy <项目目录> [commit] [branch]\n' >&2
     exit 1
   fi
-  if [ "$1" = "--prepare-env" ]; then
+  if [ "$1" = "--prepare-env" ] || [ "$1" = "--restore-compose" ] || [ "$1" = "--stop-compose" ]; then
+    local mode=environment
+    case "$1" in --restore-compose) mode=compose ;; --stop-compose) mode=stop ;; esac
     shift
-    restore_environment "${1:-}"
+    restore_environment "${1:-}" "$mode"
     return 0
   fi
 
@@ -843,6 +888,35 @@ main() {
     "$deploy_root"|"$deploy_root"/*) ;;
     *) die "拒绝部署: 目录必须位于 $deploy_root 下" ;;
   esac
+  case "$TARGET_REAL" in
+    "$deploy_root"/*) ;;
+    *) die "拒绝部署: 实际目录必须位于 $deploy_root 下" ;;
+  esac
+  VERSIONS_ROOT="$deploy_root/.versions/$REPO_NAME"
+  CURRENT_LINK="$deploy_root/$REPO_NAME"
+  mkdir -p "$VERSIONS_ROOT"
+  exec 9>"$VERSIONS_ROOT/.deploy.lock"
+  flock -w 300 9 || die "等待仓库部署锁超时: $REPO_NAME"
+  case "$TARGET_REAL" in
+    "$VERSIONS_ROOT"/.staging-*)
+      [[ "$STATE_COMMIT" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || die "非法提交 ID"
+      local version_dir="$VERSIONS_ROOT/${STATE_COMMIT}-${TARGET_REAL##*.staging-}"
+      mv "$TARGET_REAL" "$version_dir"
+      TARGET_REAL="$version_dir"
+      ;;
+  esac
+  if [ -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ]; then
+    local legacy
+    legacy="$(mktemp -d "$VERSIONS_ROOT/legacy-XXXXXX")"
+    rmdir "$legacy"
+    mv "$CURRENT_LINK" "$legacy"
+    ln -s "$legacy" "$CURRENT_LINK"
+    if [ "$TARGET_REAL" = "$CURRENT_LINK" ]; then
+      TARGET_REAL="$legacy"
+    fi
+  fi
+  # 此后只读取本次导出的固定目录，不通过 current 链接读取配置。
+  TARGET="$TARGET_REAL"
 
   CFG="$TARGET/$CONFIG_NAME"
   if [ ! -f "$CFG" ]; then
@@ -877,16 +951,14 @@ main() {
   rotate_log
   setup_run_dir
 
-  exec 9>"$STATE_DIR/.deploy.lock"
-  if ! flock -w 300 9; then
-    die "等待部署锁超时（另一部署可能仍在进行）: $name"
-  fi
-
   backup_previous
+  TRANSACTION_ACTIVE=1
 
   local short_commit="${STATE_COMMIT:0:12}" deploy_failed
   log "部署项目: $name (type=$STATE_TYPE, commit=${short_commit:--}, branch=${STATE_BRANCH:--})"
   write_status "deploying"
+  cp "$STATE_DIR/deploy.json" "$STATE_DIR/pending.json.tmp"
+  mv "$STATE_DIR/pending.json.tmp" "$STATE_DIR/pending.json"
 
   prepare_environment
 
@@ -897,6 +969,7 @@ main() {
   run_workflows
   chown -R git:git "$TARGET_REAL" 2>/dev/null || true
 
+  SERVICE_CHANGED=1
   cleanup_previous "$STATE_TYPE" "$name"
 
   deploy_failed=""
@@ -922,57 +995,89 @@ main() {
       FAILED_COMMIT="$failed_commit"
       write_status "failed" "$deploy_failed"
       log "已停止部署，未回退；当前提交已标记为失败"
+      TRANSACTION_ACTIVE=0
+      [ -n "$PREV_COMMIT" ] || rm -f "$STATE_DIR/pending.json"
       exit 1
     fi
   fi
 
   chown -R git:git "$TARGET_REAL" 2>/dev/null || true
   if [ "$ROLLING_BACK" != "1" ]; then
-    write_status "success"
+    publish_current "$TARGET_REAL"
+    record_success
   fi
+  TRANSACTION_ACTIVE=0
+  rm -f "$STATE_DIR/pending.json"
+  prune_versions
   log "部署完成: $name ($STATE_TYPE)"
 }
 
 backup_previous() {
-  local status prev_commit prev_dir
+  local record="$STATE_DIR/last-success.json" status prev_commit prev_dir
   PREV_COMMIT=""
   PREV_BRANCH=""
   PREV_TYPE=""
   PREV_BACKUP=""
-  rm -f "$STATE_DIR/previous.commit"
-  if [ ! -f "$STATE_DIR/deploy.json" ]; then
+  rm -f "$STATE_DIR/previous.commit" "$STATE_DIR/previous.json"
+  if [ ! -f "$record" ]; then
+    record="$STATE_DIR/deploy.json"
+  fi
+  if [ ! -f "$record" ]; then
     return 0
   fi
-  PREV_TYPE="$(yq -r '.type // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
-  status="$(yq -r '.status // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
+  PREV_TYPE="$(yq -r '.type // ""' "$record")"
+  status="$(yq -r '.status // ""' "$record")"
   if [ "$status" != "success" ]; then
     return 0
   fi
-  prev_commit="$(yq -r '.commit // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
-  if [ -z "$prev_commit" ] || [ "$prev_commit" = "$STATE_COMMIT" ]; then
+  prev_commit="$(yq -r '.commit // ""' "$record")"
+  if [ -z "$prev_commit" ]; then
     return 0
   fi
-  prev_dir="$(dirname "$TARGET_REAL")/$prev_commit"
+  prev_dir="$(yq -r '.directory // ""' "$record")"
+  if [ -z "$prev_dir" ]; then
+    prev_dir="$VERSIONS_ROOT/$prev_commit"
+    if [ ! -d "$prev_dir" ] && [ -d "$CURRENT_LINK" ]; then
+      prev_dir="$(realpath -m -- "$CURRENT_LINK")"
+    fi
+  fi
   if [ ! -d "$prev_dir" ]; then
     warn "未找到上一版本目录 ${prev_dir}，失败时将无法自动回退"
     return 0
   fi
   PREV_COMMIT="$prev_commit"
-  PREV_BRANCH="$(yq -r '.branch // ""' "$STATE_DIR/deploy.json" 2>/dev/null || true)"
+  PREV_BRANCH="$(yq -r '.branch // ""' "$record")"
   PREV_BACKUP="$prev_dir"
+  # 为旧布局补齐恢复快照，在覆盖启动脚本之前保存。
+  local runtime="$STATE_DIR/releases/$(basename "$prev_dir")" f
+  if [ ! -d "$runtime" ]; then
+    mkdir -p "$runtime"
+    for f in start.sh supervisor.conf; do
+      [ ! -f "$STATE_DIR/$f" ] || cp -p "$STATE_DIR/$f" "$runtime/$f"
+    done
+  fi
+  APP_DIRECTORY="$prev_dir" APP_RUNTIME="$runtime" yq \
+    '.directory = strenv(APP_DIRECTORY) | .runtime_dir = strenv(APP_RUNTIME)' \
+    "$record" > "$STATE_DIR/previous.json.tmp"
+  mv "$STATE_DIR/previous.json.tmp" "$STATE_DIR/previous.json"
+  cp "$STATE_DIR/previous.json" "$STATE_DIR/last-success.json.tmp"
+  mv "$STATE_DIR/last-success.json.tmp" "$STATE_DIR/last-success.json"
   printf '%s\n' "$prev_commit" > "$STATE_DIR/previous.commit"
   log "已记录上一可用版本: ${prev_commit:0:12}"
 }
 
 deploy_previous_version() {
-  local commit="$1" link="$DATA_DIR/deploy/$REPO_NAME"
+  local commit="$1"
   if [ -d "$PREV_BACKUP" ]; then
-    ln -sfn "$PREV_BACKUP" "${link}.new" 2>/dev/null && mv -Tf "${link}.new" "$link" 2>/dev/null
+    publish_current "$PREV_BACKUP" || return 1
     TARGET_REAL="$PREV_BACKUP"
+    TARGET="$TARGET_REAL"
+    CFG="$TARGET/$CONFIG_NAME"
     chown -R git:git "$TARGET_REAL" 2>/dev/null || true
     log "已回退到上一可用版本: ${commit:0:12}"
   else
     log "警告: 回退到上一版本失败"
+    return 1
   fi
 }
 
@@ -981,14 +1086,21 @@ rollback_if_possible() {
   if [ -n "$PREV_COMMIT" ] && [ -d "$PREV_BACKUP" ]; then
     log "部署失败，自动回退到上一可用版本: ${PREV_COMMIT:0:12}"
     ROLLING_BACK=1
+    # 类型切换失败时先清理失败类型，再启动上一类型。
+    if [ "$SERVICE_CHANGED" = "1" ] && [ "$STATE_TYPE" != "$PREV_TYPE" ]; then
+      local saved_prev_type="$PREV_TYPE"
+      PREV_TYPE="$STATE_TYPE"
+      cleanup_previous "$saved_prev_type" "$STATE_NAME" "$TARGET"
+      PREV_TYPE="$saved_prev_type"
+    fi
     STATE_COMMIT="$PREV_COMMIT"
     STATE_BRANCH="$PREV_BRANCH"
-    deploy_previous_version "$PREV_COMMIT"
-    if ! ( prepare_environment ); then
+    deploy_previous_version "$PREV_COMMIT" || return 1
+    if ! ( trap - EXIT; prepare_environment ); then
       log "警告: 回退版本的基础环境恢复失败，继续尝试启动"
     fi
     STATE_TYPE="$(cfg_str '.type' 'process')"
-    if start_service && health_check; then
+    if { [ "$SERVICE_CHANGED" = "0" ] || start_service; } && health_check; then
       FAILED_COMMIT="$failed_commit"
       mark_failed "$failed_commit" "$failed_branch" "$failure" "true"
       write_status "success" "已回退到 ${PREV_COMMIT:0:12}"
@@ -1001,25 +1113,55 @@ rollback_if_possible() {
   fi
   log "没有可用的上一版本，停止部署"
   local link="$DATA_DIR/deploy/$REPO_NAME"
-  if [ "$STATE_TYPE" = "docker-compose" ] && [ -d "$TARGET_REAL" ]; then
-    local project="autodeploy-$(printf '%s' "$STATE_NAME" | sed 's/[^A-Za-z0-9_.-]/-/g')"
-    if ! (cd "$TARGET_REAL" && docker compose -p "$project" down --remove-orphans) 2>&1 | tee -a "$LOG_FILE"; then
-      log "警告: 停止失败的 compose 服务失败"
-    fi
+  if [ "$SERVICE_CHANGED" = "1" ] && [ "$STATE_TYPE" = "docker-compose" ] && [ -d "$TARGET_REAL" ]; then
+    PREV_TYPE=docker-compose
+    cleanup_previous process "$STATE_NAME" "$TARGET_REAL"
   fi
-  if [ "$STATE_TYPE" = "process" ]; then
+  if [ "$SERVICE_CHANGED" = "1" ] && [ "$STATE_TYPE" = "process" ]; then
     local program="autodeploy-$(printf '%s' "$STATE_NAME" | sed 's/[^A-Za-z0-9_-]/-/g')"
     rm -f "$SUPERVISOR_CONF_DIR/$program.conf" "$STATE_DIR/supervisor.conf" "$STATE_DIR/start.sh"
     supervisorctl_log stop "$program"
     supervisorctl_log reread
     supervisorctl_log update
   fi
-  if [ -L "$link" ]; then
+  if [ -L "$link" ] && [ "$(realpath -m -- "$link")" = "$TARGET_REAL" ]; then
     rm -f "$link"
   fi
   rm -rf "$TARGET_REAL"
   log "已移除失败的部署目录: $TARGET_REAL"
   return 1
+}
+
+publish_current() {
+  local directory="$1"
+  ln -sfn "$directory" "${CURRENT_LINK}.new" || return 1
+  mv -Tf "${CURRENT_LINK}.new" "$CURRENT_LINK"
+}
+
+record_success() {
+  local runtime="$STATE_DIR/releases/$(basename "$TARGET_REAL")" f
+  mkdir -p "$runtime"
+  for f in start.sh supervisor.conf; do
+    [ ! -f "$STATE_DIR/$f" ] || cp -p "$STATE_DIR/$f" "$runtime/$f"
+  done
+  write_status success
+  APP_RUNTIME="$runtime" yq '.runtime_dir = strenv(APP_RUNTIME)' \
+    "$STATE_DIR/deploy.json" > "$STATE_DIR/last-success.json.tmp"
+  mv "$STATE_DIR/last-success.json.tmp" "$STATE_DIR/last-success.json"
+}
+
+prune_versions() {
+  local directory count=0 current
+  current="$(realpath -m -- "$CURRENT_LINK")"
+  while IFS= read -r -d '' directory; do
+    directory="${directory#* }"
+    count=$((count + 1))
+    [ "$count" -gt 5 ] || continue
+    case "$directory" in "$current"|"$PREV_BACKUP"|"$TARGET_REAL") continue ;; esac
+    rm -rf -- "$directory"
+    rm -rf -- "$STATE_DIR/releases/$(basename "$directory")"
+  done < <(find "$VERSIONS_ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.staging-*' \
+    -printf '%T@ %p\0' | sort -z -nr)
 }
 
 main "$@"

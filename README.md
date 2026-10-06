@@ -16,7 +16,7 @@ git push (SSH / HTTP)
   nginx + fcgiwrap ──────┘        │ post-receive 钩子
                                   ▼
        导出代码 -> /data/deploy/.versions/app/<commit>
-         deploy/app 符号链接 -> 当前版本
+         deploy/app 符号链接 -> 最近成功版本（健康检查通过后切换）
                                   │
                     扫描 AutoDeploy.config.yaml
                       │ 无                    │ 有
@@ -304,13 +304,13 @@ jobs:
 
 ## 部署失败自动回退
 
-每个提交部署到独立版本目录 `deploy/.versions/<repo>/<commit>`，`deploy/<repo>` 是指向当前版本的符号链接，切换用原子 `rename` 完成（不会出现目录空窗）。部署前从 `deploy.json` 记录上一可用版本，失败（进程未起、compose 失败、健康检查未通过、`after.sh` 失败）时：
+每次部署尝试使用独立版本目录 `deploy/.versions/<repo>/<commit>-<attempt>`，同一提交重试不会覆盖已有目录。`deploy/<repo>` 只在健康检查和 `after.sh` 通过后原子切换；部署期间读取本次版本的固定路径。仓库锁覆盖切换、回退和清理，等待锁的导出目录保持 staging 状态。部署前从独立的 `last-success.json` 记录上一可用版本，失败（环境准备、before/workflow、进程启动、compose、健康检查或 after 阶段）时：
 
 1. 先把失败的提交写入 `state/<name>/failed.json` 并在 `deploy.json.failed_commit` 记录（"标记这个提交"）；
 2. 存在上一可用版本 → 把 `deploy/<repo>` 符号链接原子切回上一版本目录，重放旧配置的 `environment`，重新拉起该版本并**再跑一次健康检查**，通过后写回 `success`（`failed_commit` 仍指向失败提交），服务保持可用；
 3. 没有上一可用版本（首次部署）→ 停止失败的服务（process 停 supervisor、compose 停项目）、移除失败版本目录与符号链接，仅保留失败标记。
 
-回退只是重指符号链接，不需要复制代码；`docker-compose` 回退会重建 compose 栈并清理孤儿容器（同样需要 Docker）。容器重启时若发现 `deploy.json` 仍为 `deploying`（部署中途被杀），入口脚本会按 `state/<name>/previous.commit` 把符号链接切回上一版本。`autodeploy show` 会显示 `failed_commit` 与 `failed.json` 标记。
+回退不需要复制代码，也不重跑旧版本的 install/build；部署前失败时保留仍在运行的旧服务。`docker-compose` 回退会重建 compose 栈并清理孤儿容器。容器重启时通过 `pending.json` / `deploying` 状态检测中断，按 `previous.json` 恢复旧目录和该版本保存的启动脚本、Supervisor 配置；compose 类型重放旧栈。缺少启动快照时禁用自动启动并提示手动部署，避免用新命令启动旧代码。最近 5 个版本之外仍会保护当前和回退目录。`autodeploy show` 会显示 `failed_commit` 与 `failed.json` 标记。
 
 ## 容器内管理命令
 
@@ -373,10 +373,14 @@ docker exec -it autodeploy autodeploy help
 ├── git-home/.ssh/authorized_keys
 ├── htpasswd                          # HTTP Basic 凭据
 ├── deploy/app                        # current 符号链接 -> .versions/<repo>/<commit>
-├── deploy/.versions/<repo>/<commit>  # 每个版本的代码（保留最近 5 个）
+├── deploy/.versions/<repo>/<commit>-<attempt>  # 每次尝试的代码，保护当前和回退目录
 ├── state/<name>/deploy.json          # 最近部署状态（含 failed_commit）
 ├── state/<name>/failed.json          # 最近一次失败的提交标记
 ├── state/<name>/previous.commit      # 上一可用版本 commit（崩溃恢复用）
+├── state/<name>/previous.json        # 上一可用版本目录和启动快照位置
+├── state/<name>/last-success.json    # 最后成功版本，不被失败尝试覆盖
+├── state/<name>/pending.json         # 尚未完成的部署事务
+├── state/<name>/releases/<version>/  # 按版本保存的启动脚本和 Supervisor 配置
 ├── state/<name>/environment.yml      # 当前生效的 environment 快照
 ├── state/<name>/environment.boot     # 上次构建环境的容器实例 ID
 ├── state/<name>/start.sh             # process 类型启动脚本
@@ -395,6 +399,7 @@ docker exec -it autodeploy autodeploy help
 - **挂载 `docker.sock` ≈ 宿主机 root**：仅当需要 `type: docker-compose` 时挂载，否则从 `docker-compose.yml` 移除该 volume（或用 profile 控制）；
 - HTTP 默认是明文 Basic 认证，生产务必经 TLS 网关（见"方式三"），不要把凭据直接暴露在公网；
 - HTTP 密码由 `/dev/urandom` 生成（真随机、无固定种子），仅首次启动打印并持久化在 `/data/htpasswd`；
+- 初始化 HTTP 凭据后清除明文密码环境变量；部署子脚本和业务进程从空环境启动，只注入基础变量与项目声明的 env，不继承部署凭据。需要代理或其它运行变量时请在项目 env 中显式声明；
 - SSH 主机密钥首次启动随机生成并持久化在 `/data/ssh`，不烤进镜像。
 
 ## 常见问题
