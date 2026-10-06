@@ -25,7 +25,7 @@ if [ -r "$SETTINGS_FILE" ]; then
   log "已加载持久化设置: $SETTINGS_FILE"
 fi
 
-mkdir -p "$DATA_DIR"/{git-home,deploy,state,logs,ssh} \
+mkdir -p "$DATA_DIR"/{git-home,deploy/.versions,state,logs,ssh} \
          /etc/autodeploy /etc/supervisor/conf.d /var/log/autodeploy /var/log/supervisor /run/sshd
 chmod 755 /run/sshd
 find "$DATA_DIR/deploy/.versions" -type d -name '.staging-*' -exec rm -rf {} + 2>/dev/null || true
@@ -40,7 +40,10 @@ fi
 
 GIT_HOME="$DATA_DIR/git-home"
 mkdir -p "$GIT_HOME/.ssh"
-chown "$SSH_USER:$SSH_USER" "$DATA_DIR"
+chown "$SSH_USER:$SSH_USER" \
+  "$DATA_DIR" \
+  "$DATA_DIR/deploy" \
+  "$DATA_DIR/deploy/.versions"
 chown -R "$SSH_USER:$SSH_USER" "$GIT_HOME"
 chmod 700 "$GIT_HOME" "$GIT_HOME/.ssh"
 
