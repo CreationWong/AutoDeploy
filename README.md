@@ -1,9 +1,37 @@
 # AutoDeploy
 
-自带 Git 服务器与自动部署能力的 Docker 容器：把代码 `git push` 进来，容器扫描项目根目录的 `AutoDeploy.config.yaml`——没有就只入库不部署，有就按配置部署。
+一个通过 `git push` 驱动的轻量自托管部署服务。AutoDeploy 在单个容器内提供 SSH/HTTP Git 服务，收到推送后读取项目根目录的 `AutoDeploy.config.yaml`，完成构建、启动、健康检查和失败回退。
 
-- `type: process`：以 supervisor 托管进程，运行在 AutoDeploy 容器内部；
-- `type: docker-compose`：调用宿主机 Docker，以兄弟容器运行应用的 compose。
+> 当前版本：`V0.1.1`。[Docker Hub 镜像](https://hub.docker.com/r/creationwong/autodeploy/tags?name=V0.1.1) `creationwong/autodeploy:V0.1.1` 支持 `linux/amd64` 和 `linux/arm64`。
+
+## 功能亮点
+
+- **推送即部署**：支持 SSH 与 HTTP Git 推送，不依赖 GitHub/GitLab webhook；
+- **两种运行方式**：`process` 由 Supervisor 托管，`docker-compose` 运行独立业务容器；
+- **安全切换版本**：每次部署使用独立版本目录，健康检查通过后才原子切换；
+- **失败自动回退**：构建、启动、健康检查或部署后钩子失败时恢复上一可用版本；
+- **项目内声明配置**：分支/标签规则、环境准备、构建命令和健康检查随代码版本管理；
+- **部署前流水线**：支持 `.AutoDeploy/before.sh` 和精简的 GitHub Actions 风格 workflow；
+- **持久化与可观测**：裸仓库、版本、状态和日志统一保存在 `/data`。
+
+## 选择部署模式
+
+| 模式 | 适合场景 | 运行位置 | 主要注意事项 |
+| --- | --- | --- | --- |
+| `process` | Python/Node 等单进程服务、小型应用 | AutoDeploy 容器内 | 运行时需通过 `environment` 安装，或自定义基础镜像 |
+| `docker-compose` | Hexo、前后端项目、数据库依赖、多服务应用 | 独立兄弟容器 | 需要挂载宿主机 `docker.sock` |
+
+项目根目录没有 `AutoDeploy.config.yaml` 时，推送内容只进入裸仓库，不会触发部署。
+
+## 文档导航
+
+- [快速开始](#快速开始)
+- [Git 推送地址与触发规则](#git-推送)
+- [项目配置字段](#autodeployconfigyaml)
+- [Hexo 部署示例](#hexo-部署示例)
+- [部署失败自动回退](#部署失败自动回退)
+- [安全说明](#安全说明)
+- [常见问题](#常见问题)
 
 ## 工作原理
 
@@ -37,24 +65,93 @@ git push (SSH / HTTP)
 
 ## 快速开始
 
-### 方式一：docker compose（快速体验）
+部署顺序固定为：**先启动 AutoDeploy 服务，再把业务项目推送给它**。业务项目不需要手动在服务器上执行 `docker compose up`。
+
+### 前置条件
+
+- Docker Engine 或 Docker Desktop；
+- 使用 `docker-compose` 类型时，宿主机需要 Docker Compose v2；
+- 客户端安装 Git，并能访问服务器的 SSH 或 HTTP Git 端口；
+- 只向可信用户开放推送权限，原因见[安全说明](#安全说明)。
+
+### 1. 使用发布镜像启动 AutoDeploy（推荐）
+
+下面的命令启用 HTTP Git，并挂载 Docker socket 以支持业务项目的 Compose 部署：
 
 ```bash
-# 1. 构建并启动 AutoDeploy 容器
-AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" docker compose up -d --build
+docker volume create autodeploy-data
 
-# 2. 查看启动日志（HTTP 密码随机生成时会打印）
+docker run -d \
+  --name autodeploy \
+  --restart unless-stopped \
+  -p 2222:22 \
+  -p 8080:80 \
+  -v autodeploy-data:/data \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --add-host=host.docker.internal:host-gateway \
+  -e AUTODEPLOY_HTTP_USER=autodeploy \
+  -e AUTODEPLOY_HTTP_PASSWORD= \
+  creationwong/autodeploy:V0.1.1
+```
+
+确认服务健康，并从首次启动日志中记录随机生成的 HTTP 密码：
+
+```bash
+docker inspect --format '{{.State.Health.Status}}' autodeploy
 docker logs autodeploy
+```
 
-# 3. 推送示例项目
+需要 SSH 推送时，在 `docker run` 中增加：
+
+```bash
+-e AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)"
+```
+
+> 只部署 `process` 类型时可以移除 `docker.sock` 和 `host.docker.internal`；使用 `docker-compose` 类型时必须保留。
+
+### 2. 推送第一个业务项目
+
+项目根目录必须包含 `AutoDeploy.config.yaml`。仓库自带的 Python 示例可以直接体验：
+
+```bash
 cd examples/sample-app
-git init -b main && git add . && git commit -m init
-git remote add origin ssh://git@localhost:2222/~/app.git
-git push origin main
+git init -b main
+git add .
+git commit -m "init"
 
-# 4. 验证部署结果（示例应用监听容器内 3000 端口）
+# Git 会提示输入上一步日志中的 HTTP 密码
+git remote add autodeploy http://autodeploy@localhost:8080/app.git
+git push autodeploy main
+```
+
+也可以通过 SSH 推送：
+
+```bash
+git remote add autodeploy ssh://git@localhost:2222/~/app.git
+git push autodeploy main
+```
+
+### 3. 验证部署
+
+```bash
+docker exec autodeploy autodeploy show
 docker exec autodeploy supervisorctl status
-docker exec autodeploy curl -s http://127.0.0.1:3000/
+docker exec autodeploy curl -fsS http://127.0.0.1:3000/
+```
+
+`autodeploy show` 中应用状态为 `success` 即表示部署完成。Git push 成功不等同于部署成功，原因见[常见问题](#常见问题)。
+
+### 从源码启动
+
+需要修改 AutoDeploy 本身时再使用源码构建：
+
+```bash
+git clone https://github.com/CreationWong/AutoDeploy.git
+cd AutoDeploy
+
+AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
+  docker compose up -d --build
+docker logs autodeploy
 ```
 
 宿主端口可改（容器内固定监听 22/80）：
@@ -63,27 +160,7 @@ docker exec autodeploy curl -s http://127.0.0.1:3000/
 AUTODEPLOY_SSH_PORT=22022 AUTODEPLOY_HTTP_PORT=18080 docker compose up -d
 ```
 
-### 方式二：docker run
-
-```bash
-docker build -t autodeploy:latest .
-
-docker run -d --name autodeploy --restart unless-stopped \
-  -p 2222:22 -p 8080:80 \
-  -v autodeploy-data:/data \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  --add-host=host.docker.internal:host-gateway \
-  -e AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
-  -e AUTODEPLOY_HTTP_USER=autodeploy \
-  -e AUTODEPLOY_HTTP_PASSWORD= \
-  -e AUTODEPLOY_SSH_PORT=2222 \
-  -e AUTODEPLOY_HTTP_PORT=8080 \
-  autodeploy:latest
-```
-
-> `docker.sock` 与 `--add-host` 是 `type: docker-compose` 部署需要的；只跑 `process` 类型可去掉。`AUTODEPLOY_HTTP_PASSWORD` 留空则首次启动随机生成并打印。
-
-### 方式三：nginx 网关（零端口，生产推荐）
+### nginx 网关（零端口，生产推荐）
 
 AutoDeploy 不发布任何端口，由单独的 nginx 容器统一入口（需要 Docker Compose v2.24+，使用 `!reset`）：
 
@@ -256,6 +333,76 @@ env:
   APP_PORT: "8081"
 ```
 
+## Hexo 部署示例
+
+Hexo 推荐使用 `docker-compose` 类型：Node 镜像负责生成静态页面，最终镜像只保留 Nginx 和生成后的 `public/`。AutoDeploy 容器本身不需要安装 Node。
+
+确保 Hexo 项目的 `package.json` 有构建脚本，并提交 `package-lock.json`：
+
+```json
+{
+  "scripts": {
+    "build": "hexo generate"
+  }
+}
+```
+
+在项目根目录添加 `AutoDeploy.config.yaml`：
+
+```yaml
+version: 1
+name: hexo-blog
+type: docker-compose
+file: docker-compose.yml
+services: [web]
+build: true
+healthcheck:
+  url: http://host.docker.internal:14000/
+  timeout: 180
+```
+
+添加 `docker-compose.yml`：
+
+```yaml
+services:
+  web:
+    build: .
+    container_name: hexo-blog-web
+    restart: unless-stopped
+    ports:
+      - "14000:80"
+```
+
+添加 `Dockerfile`：
+
+```dockerfile
+FROM node:22-alpine AS builder
+
+WORKDIR /site
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY --from=builder /site/public /usr/share/nginx/html
+```
+
+提交并推送后，通过 `http://<host>:14000` 访问站点：
+
+```bash
+git add AutoDeploy.config.yaml docker-compose.yml Dockerfile package.json package-lock.json
+git commit -m "deploy: configure Hexo for AutoDeploy"
+git push autodeploy main
+```
+
+注意：
+
+- Hexo 主题如果使用 Git submodule，`git archive` 不会包含子模块工作树。建议把主题代码直接纳入仓库，或在 Docker 构建阶段安装；
+- 使用外部 Nginx 网关时，可以移除 `ports`，把 `web` 加入共享网络，并把健康检查改为网络内地址（如 `http://hexo-blog-web/`）；
+- 首次构建需要下载 Node 镜像和 npm 依赖，健康检查超时建议设置为 120 秒以上。
+
 ## .AutoDeploy（部署前 CI/CD）
 
 ### shell 钩子
@@ -397,7 +544,7 @@ docker exec -it autodeploy autodeploy help
 - 部署脚本校验目标目录必须位于 `/data/deploy` 内；
 - **推送权限 ≈ 容器内 root**：`.AutoDeploy/before.sh`、workflows、`environment.setup` 均以 root 执行，`git` 用户可免密 `sudo autodeploy-deploy`，且 `process` 类型默认就以 `git` 运行。能推送到该仓库的人可在容器内以 root 执行任意代码，请把推送凭据当 root 凭据保管；
 - **挂载 `docker.sock` ≈ 宿主机 root**：仅当需要 `type: docker-compose` 时挂载，否则从 `docker-compose.yml` 移除该 volume（或用 profile 控制）；
-- HTTP 默认是明文 Basic 认证，生产务必经 TLS 网关（见"方式三"），不要把凭据直接暴露在公网；
+- HTTP 默认是明文 Basic 认证，生产务必经 TLS 网关（见 [nginx 网关](#nginx-网关零端口生产推荐)），不要把凭据直接暴露在公网；
 - HTTP 密码由 `/dev/urandom` 生成（真随机、无固定种子），仅首次启动打印并持久化在 `/data/htpasswd`；
 - 初始化 HTTP 凭据后清除明文密码环境变量；部署子脚本和业务进程从空环境启动，只注入基础变量与项目声明的 env，不继承部署凭据。需要代理或其它运行变量时请在项目 env 中显式声明；
 - SSH 主机密钥首次启动随机生成并持久化在 `/data/ssh`，不烤进镜像。
