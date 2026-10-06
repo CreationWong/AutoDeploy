@@ -72,12 +72,14 @@ RUN set -eux; \
 
 COPY scripts/autodeploy-deploy /usr/local/bin/autodeploy-deploy
 COPY scripts/autodeploy /usr/local/bin/autodeploy
+COPY scripts/autodeploy-endpoints /usr/local/bin/autodeploy-endpoints
 COPY scripts/post-receive /usr/local/bin/autodeploy-post-receive
 COPY entrypoint.sh /usr/local/bin/autodeploy-entrypoint
 
 RUN chmod 755 \
       /usr/local/bin/autodeploy-deploy \
       /usr/local/bin/autodeploy \
+      /usr/local/bin/autodeploy-endpoints \
       /usr/local/bin/autodeploy-post-receive \
       /usr/local/bin/autodeploy-entrypoint
 

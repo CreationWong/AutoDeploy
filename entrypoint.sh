@@ -11,6 +11,8 @@ SSH_USER="git"
 
 log() { printf '[AutoDeploy] %s\n' "$*"; }
 warn() { printf '[AutoDeploy] 警告: %s\n' "$*" >&2; }
+# shellcheck source=scripts/autodeploy-endpoints
+. /usr/local/bin/autodeploy-endpoints
 
 SETTINGS_FILE="$DATA_DIR/settings.env"
 if [ -r "$SETTINGS_FILE" ]; then
@@ -86,6 +88,7 @@ elif [ ! -s "$HTPASSWD" ]; then
   log "  密  码: $RANDOM_PASSWORD"
   log "================================================================"
 else
+  HTTP_USER="$(autodeploy_http_user)"
   log "复用已有 HTTP 凭据文件: $HTPASSWD（用户名: $HTTP_USER）"
   log "  如需重置密码: 删除该文件后重启容器，或设置 AUTODEPLOY_HTTP_PASSWORD"
 fi
@@ -193,10 +196,7 @@ if [ "$RESTORE_ENV" = "1" ] && [ -f "$DATA_DIR/deploy/${REPO_NAME}/${CONFIG_NAME
   fi
 fi
 
-SSH_PORT="${AUTODEPLOY_SSH_PORT:-2222}"
-HTTP_PORT="${AUTODEPLOY_HTTP_PORT:-8080}"
-log "SSH  推送地址: ssh://git@<host>:${SSH_PORT}/~/${REPO_NAME}.git  (部署分支: ${DEPLOY_BRANCH})"
-log "HTTP 推送地址: http://<user>@<host>:${HTTP_PORT}/${REPO_NAME}.git"
+autodeploy_log_endpoints
 log "启动完成，扫描到配置 ${CONFIG_NAME} 才会部署"
 
 exec "$@"

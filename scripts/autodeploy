@@ -7,6 +7,8 @@ SETTINGS_FILE="$DATA_DIR/settings.env"
 GIT_HOME="$DATA_DIR/git-home"
 
 log() { printf '[AutoDeploy] %s\n' "$*"; }
+# shellcheck source=scripts/autodeploy-endpoints
+. /usr/local/bin/autodeploy-endpoints
 
 load_settings() {
   if [ -r "$ENV_FILE" ]; then
@@ -49,9 +51,8 @@ cmd_show() {
   printf '  DEPLOY_TAG             = %s\n' "${DEPLOY_TAG:-<未启用>}"
   printf '  DEPLOY_TAG_MODE        = %s\n' "$DEPLOY_TAG_MODE"
   printf '  AUTODEPLOY_CONFIG_NAME = %s\n' "$AUTODEPLOY_CONFIG_NAME"
-  printf '  SSH_PORT               = %s\n' "${AUTODEPLOY_SSH_PORT:-2222}"
-  printf '  HTTP_PORT              = %s\n' "${AUTODEPLOY_HTTP_PORT:-8080}"
-  printf '  HTTP_USER              = %s\n' "${AUTODEPLOY_HTTP_USER:-autodeploy}"
+  printf '  HTTP_USER              = %s\n' "$(autodeploy_http_user)"
+  autodeploy_log_endpoints
   echo
 
   local repo_dir="$GIT_HOME/${REPO_NAME}.git"

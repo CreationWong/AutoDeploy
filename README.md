@@ -76,12 +76,16 @@ docker run -d --name autodeploy --restart unless-stopped \
   -e AUTHORIZED_KEYS="$(cat ~/.ssh/id_ed25519.pub)" \
   -e AUTODEPLOY_HTTP_USER=autodeploy \
   -e AUTODEPLOY_HTTP_PASSWORD= \
-  -e AUTODEPLOY_SSH_PORT=2222 \
-  -e AUTODEPLOY_HTTP_PORT=8080 \
   autodeploy:latest
 ```
 
 > `docker.sock` 与 `--add-host` 是 `type: docker-compose` 部署需要的；只跑 `process` 类型可去掉。`AUTODEPLOY_HTTP_PASSWORD` 留空则首次启动随机生成并打印。
+
+启动日志和 `autodeploy show` 会通过 Docker 读取当前容器实际发布的端口。例如 `-p 8096:80` 会显示 `http://autodeploy@<host>:8096/app.git`；没有发布 22 端口时会显示 SSH 未发布。HTTP 用户名来自现有凭据文件（首次创建时使用 `AUTODEPLOY_HTTP_USER`）。
+
+可用 `-e AUTODEPLOY_HOST=git.example.com` 指定客户端访问的域名/IP；未指定时，日志使用端口绑定的具体 IP，绑定在 `0.0.0.0` / `::` 则显示 `<host>` 并提示替换。容器无法可靠推断宿主机的公网 IP 或外部域名。
+
+实际端口检测需要 Docker CLI、可访问的 Docker 服务和默认容器 hostname。未挂载 `docker.sock`、构建时禁用 Docker CLI 或自定义 hostname 导致检测失败时，日志会明确显示地址模板，可用 `AUTODEPLOY_SSH_PORT` / `AUTODEPLOY_HTTP_PORT` 提供外部端口。网关模式也可设置这两个变量描述外部入口；直接发布的实际端口优先于配置值。端口在每次启动和执行 `autodeploy show` 时重新读取。
 
 ### 方式三：nginx 网关（零端口，生产推荐）
 
@@ -345,8 +349,9 @@ docker exec -it autodeploy autodeploy help
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `AUTODEPLOY_SSH_PORT` | `2222` | 宿主机映射的 SSH 端口（compose 变量，容器内固定 22） |
-| `AUTODEPLOY_HTTP_PORT` | `8080` | 宿主机映射的 HTTP 端口（compose 变量，容器内固定 80） |
+| `AUTODEPLOY_SSH_PORT` | compose 发布默认 `2222`，容器内为空 | compose 的 SSH 发布端口；日志无法读取实际映射或使用外部网关时的端口提示（容器内固定 22） |
+| `AUTODEPLOY_HTTP_PORT` | compose 发布默认 `8080`，容器内为空 | compose 的 HTTP 发布端口；日志无法读取实际映射或使用外部网关时的端口提示（容器内固定 80） |
+| `AUTODEPLOY_HOST` | 空 | 日志中的外部域名/IP；留空使用具体绑定 IP，通配绑定使用 `<host>` |
 | `REPO_NAME` | `app` | 裸仓库名（`${REPO_NAME}.git`），也作为默认应用名 |
 | `DEPLOY_BRANCH` | `main` | 默认触发部署的分支，支持逗号分隔和 `*` 通配（可被 `deploy.branches` 覆盖） |
 | `DEPLOY_TAG` | 空 | 默认触发部署的标签，支持逗号分隔和 `*` 通配，空=不启用（可被 `deploy.tags` 覆盖） |
