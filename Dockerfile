@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 CreationWong
+# See LICENSE for the license terms and warranty disclaimer.
+
 ARG BASE_IMAGE=debian:bookworm-slim
 FROM ${BASE_IMAGE}
 
@@ -87,7 +91,15 @@ ARG VERSION=V0.1.2
 ARG REVISION=unknown
 LABEL org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
-      org.opencontainers.image.source="https://github.com/CreationWong/AutoDeploy"
+      org.opencontainers.image.source="https://github.com/CreationWong/AutoDeploy" \
+      org.opencontainers.image.licenses="GPL-3.0-only" \
+      org.opencontainers.image.authors="CreationWong"
+
+# Ship the license and AutoDeploy's corresponding source/build files together.
+COPY LICENSE NOTICE /usr/share/doc/autodeploy/
+COPY Dockerfile .dockerignore entrypoint.sh LICENSE NOTICE /usr/share/doc/autodeploy/source/
+COPY scripts/ /usr/share/doc/autodeploy/source/scripts/
+COPY conf/ /usr/share/doc/autodeploy/source/conf/
 
 EXPOSE 22 80
 

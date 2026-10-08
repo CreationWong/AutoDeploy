@@ -1,4 +1,21 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 CreationWong
+#
+# This file is part of AutoDeploy.
+#
+# AutoDeploy is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3 of the License.
+#
+# AutoDeploy is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with AutoDeploy. If not, see <https://www.gnu.org/licenses/>.
+
 set -euo pipefail
 
 DATA_DIR="${AUTODEPLOY_DATA_DIR:-/data}"
@@ -230,6 +247,7 @@ AutoDeploy 管理命令
   retry                     重新部署上次成功提交
   logs [name] [N]           查看应用日志（默认第一个应用，最近 50 行）
   log [N]                   查看当前项目提交历史（默认最近 10 条）
+  license                   查看 GNU GPL 第 3 版许可全文
   help                      显示本帮助
 
 可修改的 KEY:
@@ -241,11 +259,16 @@ AutoDeploy 管理命令
 
 说明: 上述触发规则可在项目 AutoDeploy.config.yaml 的 deploy 段按项目覆盖；
       修改对下一次 git push 生效；REPO_NAME 不会重命名已存在的裸仓库。
+
+Copyright (C) 2026 CreationWong
+许可: GNU GPL 第 3 版 (GPL-3.0-only)。本程序不提供任何担保。
+可按许可条款修改和再分发；运行 autodeploy license 查看全文。
 EOF
 }
 
 case "${1:-help}" in
   show|status) cmd_show ;;
+  license|--license) cat /usr/share/doc/autodeploy/LICENSE ;;
   log|history)
     shift
     cmd_log "${1:-10}"

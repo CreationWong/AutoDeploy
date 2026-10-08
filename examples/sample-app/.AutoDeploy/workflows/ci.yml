@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 CreationWong
+# See LICENSE for the license terms and warranty disclaimer.
+
 name: ci
 
 on: [push]
@@ -11,12 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: 校验项目文件
-        run: |
-          test -f server.py
-          echo "ci: server.py 存在"
+        run: python3 .AutoDeploy/check.py files
       - name: 语法检查
-        run: python3 -m py_compile server.py
+        run: python3 .AutoDeploy/check.py syntax
       - name: 通过 GITHUB_ENV 传递变量
-        run: echo "CHECKED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+        run: python3 .AutoDeploy/check.py export-env
       - name: 读取上一步变量
-        run: 'echo "ci: 检查时间 ${CHECKED_AT}"'
+        run: python3 .AutoDeploy/check.py print-env

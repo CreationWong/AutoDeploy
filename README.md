@@ -4,6 +4,8 @@
 
 > 当前版本：`V0.1.2`。[Docker Hub 镜像](https://hub.docker.com/r/creationwong/autodeploy/tags?name=V0.1.2) `creationwong/autodeploy:V0.1.2` 支持 `linux/amd64` 和 `linux/arm64`。
 
+Copyright (C) 2026 CreationWong。项目采用 [GNU General Public License 第 3 版](LICENSE)（`GPL-3.0-only`）。
+
 ## 功能亮点
 
 - **推送即部署**：支持 SSH 与 HTTP Git 推送，不依赖 GitHub/GitLab webhook；
@@ -30,6 +32,8 @@
 - [项目配置字段](#autodeployconfigyaml)
 - [Hexo 部署示例](#hexo-部署示例)
 - [部署失败自动回退](#部署失败自动回退)
+- [版本标签自动发布到 GHCR](#版本标签自动发布到-ghcr)
+- [开发与贡献](#开发与贡献)
 - [安全说明](#安全说明)
 - [常见问题](#常见问题)
 
@@ -489,7 +493,8 @@ docker exec -it autodeploy autodeploy help
 | `autodeploy deploy <branch\|tag\|commit>` | 手动部署指定 ref（可对历史提交/标签，用于回滚） |
 | `autodeploy retry` | 重新部署上次成功提交 |
 | `autodeploy logs [name] [N]` | 查看应用日志（deploy.log / app.log / app.err.log，默认第一个应用、50 行） |
-| `autodeploy log [N]` | 查看当前项目提交历史（默认 10 条，含分支装饰） |
+| `autodeploy log [N]` | 查看当前项目提交历史（默认 10 条，包含分支和标签） |
+| `autodeploy license` | 查看 GNU GPL 第 3 版许可全文 |
 
 - 可修改 KEY：`REPO_NAME`、`DEPLOY_BRANCH`、`DEPLOY_TAG`、`DEPLOY_TAG_MODE`、`AUTODEPLOY_CONFIG_NAME`；
 - 修改对下一次 `git push` 生效，并持久化到 `/data/settings.env`，容器重建后由入口脚本重新加载；
@@ -521,7 +526,7 @@ docker exec -it autodeploy autodeploy help
 
 ## 数据与日志
 
-都在 `/data` 卷内：
+仓库、部署状态、应用版本和日志保存在 `/data` 数据卷中：
 
 ```
 /data
@@ -556,7 +561,7 @@ docker exec -it autodeploy autodeploy help
 - HTTP 默认是明文 Basic 认证，生产务必经 TLS 网关（见 [nginx 网关](#nginx-网关零端口生产推荐)），不要把凭据直接暴露在公网；
 - HTTP 密码由 `/dev/urandom` 生成（真随机、无固定种子），仅首次启动打印并持久化在 `/data/htpasswd`；
 - 初始化 HTTP 凭据后清除明文密码环境变量；部署子脚本和业务进程从空环境启动，只注入基础变量与项目声明的 env，不继承部署凭据。需要代理或其它运行变量时请在项目 env 中显式声明；
-- SSH 主机密钥首次启动随机生成并持久化在 `/data/ssh`，不烤进镜像。
+- SSH 主机密钥在首次启动时生成，保存在 `/data/ssh`，不随镜像分发。
 
 ## 常见问题
 
@@ -566,7 +571,43 @@ docker exec -it autodeploy autodeploy help
 - **容器重建后部署还在吗？** 在。裸仓库、工作目录、supervisor 配置、日志、基础环境快照都持久化在 `/data`，入口脚本自动恢复。
 - **应用端口怎么暴露？** `docker-compose` 类型由应用 compose 的 `ports:` 发布；`process` 类型加入外部网络后用 nginx 网关代理，均不需要改 AutoDeploy 自身。
 
-## 开发辅助
+## 开发与贡献
 
-- `opencode.json` 已声明 [ponytail](https://github.com/DietrichGebert/ponytail) 插件，opencode 启动时自动安装并按 YAGNI 规则约束代码改动。默认强度 `full`，可用 `/ponytail lite|full|ultra|off` 切换。修改配置后需重启 opencode 生效。
-- `.opencode/skills/` 内置两个 skill：`sensitive-info-check`（提交/推送前扫描密钥与隐私信息，可用 `scan.sh --staged|--outgoing`）与 `security-audit`（Cloudflare 多阶段安全审计，校验器需要 Node）。
+本地检查使用 Python 3.10+。环境要求、检查命令、GitHub Actions 触发条件和发布步骤见 [开发文档](docs/development.md)。
+
+## 版本标签自动发布到 GHCR
+
+[发布流水线](.github/workflows/publish-ghcr.yml) 按 **发布内容进入 main → 推送版本标签 → CI 通过 → 发布镜像** 的顺序执行。维护者先将更改提交到远端 main，或将 PR 合并到 main，再创建并推送指向该提交的版本标签。发布任务在 CI 通过后复核 main 历史，并确认构建提交与已检查的提交一致，然后构建 `linux/amd64` 和 `linux/arm64` 镜像并发布到 GHCR。
+
+版本标签支持 `V0.1.3`、`v0.1.3` 和 `V0.1.3-rc.1` 等格式。镜像标签保留版本标签原文，地址为 `ghcr.io/creationwong/autodeploy:<版本标签>`。
+
+所有分支的提交，以及 PR 的创建、更新和重新打开，都会运行 CI。PR 合并后，目标分支的新提交也会运行检查。镜像发布仅由指向 main 历史提交的版本标签触发；PR、未合并分支上的标签和非版本标签均不发布镜像。
+
+例如，`V0.1.3` 发布完成后，可运行：
+
+```bash
+docker pull ghcr.io/creationwong/autodeploy:V0.1.3
+```
+
+发布使用 GitHub 提供的 `GITHUB_TOKEN`，无需另行配置登录密钥。镜像可在仓库关联的 Packages 中查看；维护者将包可见性设为 Public 后，用户即可匿名拉取。完整发布步骤见 [开发文档](docs/development.md#发布版本)。
+
+## 许可证与再分发
+
+AutoDeploy 的项目代码由 **CreationWong** 版权所有：`Copyright (C) 2026 CreationWong`，按 **GNU General Public License 第 3 版**（SPDX：`GPL-3.0-only`）授权。许可全文见 [LICENSE](LICENSE)，版权及第三方说明见 [NOTICE](NOTICE)。本项目不提供任何担保，包括适销性或特定用途适用性的默示担保。
+
+你可以按 GPLv3 条款使用、修改和再分发本项目，包括商业使用。再分发时需遵守许可全文，特别是：
+
+- 保留版权、许可及无担保声明，并随分发提供 GPLv3 全文；
+- 分发修改版时，明确标注修改事实及相关日期，按 GPLv3 授权受其覆盖的修改版；
+- 分发镜像或其他非源码形式时，按 GPLv3 第 6 条提供该版本完整的对应源码，包括构建和安装所需文件；
+- 第三方组件保留各自的版权和许可，并按其许可履行源码提供等要求。镜像中的 Debian、Git、nginx、OpenSSH、Docker CLI、yq 等组件不因本项目声明而变更许可。
+
+按当前 Dockerfile 构建的镜像会附带 `/usr/share/doc/autodeploy/LICENSE`、`NOTICE`，以及 `/usr/share/doc/autodeploy/source/` 中与该次构建一致的 AutoDeploy 源码、配置和 Dockerfile。可运行 `autodeploy license` 查看许可全文，也可导出项目源码：
+
+```bash
+container_id=$(docker create ghcr.io/creationwong/autodeploy:V0.1.3)
+docker cp "$container_id:/usr/share/doc/autodeploy/source" ./autodeploy-source
+docker rm "$container_id"
+```
+
+该源码目录覆盖 AutoDeploy 本身；再分发整个镜像时还需处理第三方组件各自的许可和对应源码要求。公开 Git 仓库应保留每个发布版本的源码及构建文件，使镜像接收者能够获取准确对应的版本。

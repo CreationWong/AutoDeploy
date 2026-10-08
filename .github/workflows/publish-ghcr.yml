@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 CreationWong
+# See LICENSE for the license terms and warranty disclaimer.
+
+name: Publish version image to GHCR
+
+on:
+  push:
+    tags:
+      - 'V[0-9]+.[0-9]+.[0-9]+*'
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ghcr-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Validate main version tag
+    if: github.event.deleted == false
+    runs-on: ubuntu-latest
+    outputs:
+      valid: ${{ steps.version.outputs.valid }}
+      tag: ${{ steps.version.outputs.tag }}
+      image: ${{ steps.version.outputs.image }}
+      revision: ${{ steps.version.outputs.revision }}
+    steps:
+      - name: Checkout tag and branch history
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check version format and main ancestry
+        id: version
+        run: python3 -B ci/release.py prepare
+
+  ci:
+    name: Verify release source
+    needs: version
+    if: needs.version.outputs.valid == 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      revision: ${{ needs.version.outputs.revision }}
+
+  publish:
+    name: Build and publish multi-platform image
+    needs: [version, ci]
+    if: needs.version.outputs.valid == 'true' && needs.ci.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ needs.version.outputs.image }}
+          flavor: latest=false
+          tags: type=ref,event=tag
+          labels: |
+            org.opencontainers.image.version=${{ needs.version.outputs.tag }}
+            org.opencontainers.image.revision=${{ needs.version.outputs.revision }}
+            org.opencontainers.image.licenses=GPL-3.0-only
+            org.opencontainers.image.authors=CreationWong
+
+      - name: Verify merged source after CI
+        env:
+          EXPECTED_REVISION: ${{ needs.version.outputs.revision }}
+        run: python3 -B ci/release.py verify
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.version.outputs.tag }}
+            REVISION=${{ needs.version.outputs.revision }}
+          cache-from: type=gha,scope=ghcr
+          cache-to: type=gha,mode=max,scope=ghcr
+
+      - name: Record published image
+        env:
+          IMAGE: ${{ needs.version.outputs.image }}
+          VERSION_TAG: ${{ needs.version.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: python3 -B ci/release.py summary

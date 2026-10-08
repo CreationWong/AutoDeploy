@@ -1,9 +1,20 @@
-name: ci
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 CreationWong
+# See LICENSE for the license terms and warranty disclaimer.
+
+name: CI checks
 
 on:
   push:
-    branches: [main, Dev]
+    branches: ['**']
   pull_request:
+    types: [opened, synchronize, reopened, edited]
+  workflow_call:
+    inputs:
+      revision:
+        description: Exact release commit to check
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -12,49 +23,31 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: bash 语法检查
-        run: |
-          for f in entrypoint.sh scripts/autodeploy scripts/autodeploy-endpoints scripts/autodeploy-deploy scripts/post-receive tests/*.sh; do
-            bash -n "$f"
-          done
-      - name: shellcheck
-        run: shellcheck -S error entrypoint.sh scripts/autodeploy scripts/autodeploy-endpoints scripts/autodeploy-deploy scripts/post-receive tests/*.sh
-      - name: 推送地址日志回归测试
-        run: bash tests/push-addresses.sh
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          persist-credentials: false
+      - name: Check Shell and Python source
+        run: python3 -B ci/checks.py lint
+      - name: Check release rules and push endpoints
+        run: python3 -B ci/checks.py unit
 
-  fresh-volume-permissions:
+  containers:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: 构建测试镜像
-        run: docker build -t autodeploy:fresh-volume-test .
-      - name: 验证全新数据卷权限
-        run: bash tests/fresh-volume-permissions.sh autodeploy:fresh-volume-test
-      - name: 验证真实容器端口日志
-        run: bash tests/container-push-addresses.sh autodeploy:fresh-volume-test
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          persist-credentials: false
+      - name: Build image and check container behavior
+        run: python3 -B ci/checks.py containers --build
 
   secret-scan-selftest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: sensitive-info-check 正/负向自检
-        run: |
-          set -e
-          tmp="$(mktemp -d)"
-          git -C "$tmp" init -q -b main
-          git -C "$tmp" config user.email ci@example.com
-          git -C "$tmp" config user.name ci
-
-          printf 'hello\n' > "$tmp/ok.txt"
-          git -C "$tmp" add ok.txt
-          (cd "$tmp" && bash "$GITHUB_WORKSPACE/.opencode/skills/sensitive-info-check/scan.sh" --staged)
-
-          fake="AKIA$(printf 'A%.0s' $(seq 1 16))"
-          printf 'aws_key = %s\n' "$fake" > "$tmp/leak.txt"
-          git -C "$tmp" add leak.txt
-          if (cd "$tmp" && bash "$GITHUB_WORKSPACE/.opencode/skills/sensitive-info-check/scan.sh" --staged); then
-            echo "scan.sh 未拦截假密钥"
-            exit 1
-          fi
-          echo "selftest ok"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.revision || github.sha }}
+          persist-credentials: false
+      - name: Check scanner acceptance and rejection
+        run: python3 -B ci/checks.py scanner-selftest
