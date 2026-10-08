@@ -15,20 +15,24 @@ jobs:
       - uses: actions/checkout@v4
       - name: bash 语法检查
         run: |
-          for f in entrypoint.sh scripts/autodeploy scripts/autodeploy-deploy scripts/post-receive tests/fresh-volume-permissions.sh; do
+          for f in entrypoint.sh scripts/autodeploy scripts/autodeploy-endpoints scripts/autodeploy-deploy scripts/post-receive tests/*.sh; do
             bash -n "$f"
           done
       - name: shellcheck
-        run: shellcheck -S error entrypoint.sh scripts/autodeploy scripts/autodeploy-deploy scripts/post-receive tests/fresh-volume-permissions.sh
+        run: shellcheck -S error entrypoint.sh scripts/autodeploy scripts/autodeploy-endpoints scripts/autodeploy-deploy scripts/post-receive tests/*.sh
+      - name: 推送地址日志回归测试
+        run: bash tests/push-addresses.sh
 
   fresh-volume-permissions:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: 构建测试镜像
-        run: docker build --build-arg INSTALL_DOCKER_CLI=0 -t autodeploy:fresh-volume-test .
+        run: docker build -t autodeploy:fresh-volume-test .
       - name: 验证全新数据卷权限
         run: bash tests/fresh-volume-permissions.sh autodeploy:fresh-volume-test
+      - name: 验证真实容器端口日志
+        run: bash tests/container-push-addresses.sh autodeploy:fresh-volume-test
 
   secret-scan-selftest:
     runs-on: ubuntu-latest

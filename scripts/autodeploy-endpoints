@@ -1,0 +1,71 @@
+#!/bin/bash
+# Shared by the entrypoint and `autodeploy show`; sourcing has no side effects.
+
+autodeploy_http_user() {
+  local credentials="${AUTODEPLOY_DATA_DIR:-/data}/htpasswd" username=''
+  if [ -s "$credentials" ]; then
+    IFS=: read -r username _ < "$credentials" || true
+  fi
+  printf '%s' "${username:-${AUTODEPLOY_HTTP_USER:-autodeploy}}"
+}
+
+autodeploy_endpoint_host() {
+  local host="${AUTODEPLOY_HOST:-${1:-<host>}}"
+  case "$host" in 0.0.0.0|::) host='<host>' ;; esac
+  if [[ "$host" == *:* && "$host" != \[*\] ]]; then
+    host="[$host]"
+  fi
+  printf '%s' "$host"
+}
+
+autodeploy_log_endpoint() {
+  local protocol="$1" internal_port="$2" username="$3" path="$4"
+  local bindings="$5" inspected="$6" suffix="${7:-}"
+  local port_key="AUTODEPLOY_${protocol}_PORT" scheme host port container_port bind_ip
+  local url found=0
+  local -A seen=()
+  scheme="$(printf '%s' "$protocol" | tr '[:upper:]' '[:lower:]')"
+
+  while IFS=$'\t' read -r container_port bind_ip port; do
+    [ "$container_port" = "${internal_port}/tcp" ] && [ -n "$port" ] || continue
+    host="$(autodeploy_endpoint_host "$bind_ip")"
+    url="${scheme}://${username}@${host}:${port}${path}"
+    [ -z "${seen[$url]:-}" ] || continue
+    seen["$url"]=1
+    log "$protocol 推送地址: $url$suffix"
+    found=1
+  done < <(printf '%s\n' "$bindings")
+  [ "$found" = 0 ] || return 0
+
+  # An explicitly configured port can describe a gateway, or a socket-free install.
+  port="${!port_key:-}"
+  if [ -n "$port" ]; then
+    host="$(autodeploy_endpoint_host)"
+    log "$protocol 推送地址: ${scheme}://${username}@${host}:${port}${path}$suffix (外部入口配置: $port_key)"
+  elif [ "$inspected" = 1 ]; then
+    log "$protocol 未发布宿主机端口 (容器内监听 ${internal_port}；如经网关访问，请设置 $port_key)"
+  else
+    host="$(autodeploy_endpoint_host)"
+    log "$protocol 推送地址模板: ${scheme}://${username}@${host}:<${protocol}_PORT>${path}$suffix"
+    log "  无法检测宿主机端口 (容器内监听 ${internal_port})，请设置 $port_key"
+  fi
+}
+
+autodeploy_log_endpoints() {
+  local bindings='' inspected=0 container_id="${HOSTNAME:-}" output
+  local format='{{range $port, $bindings := .NetworkSettings.Ports}}{{range $bindings}}{{printf "%s\t%s\t%s\n" $port .HostIp .HostPort}}{{end}}{{end}}'
+  [ -n "$container_id" ] || container_id="$(hostname)"
+  if command -v docker >/dev/null 2>&1; then
+    if bindings="$(timeout 3s docker inspect --type container --format "$format" "$container_id" 2>/dev/null)"; then
+      inspected=1
+    fi
+  fi
+  output="$(
+    autodeploy_log_endpoint SSH 22 git "/~/${REPO_NAME}.git" "$bindings" "$inspected" " (部署分支: ${DEPLOY_BRANCH})"
+    autodeploy_log_endpoint HTTP 80 "$(autodeploy_http_user)" "/${REPO_NAME}.git" "$bindings" "$inspected"
+  )"
+  printf '%s\n' "$output"
+  if [[ "$output" == *'<host>'* ]]; then
+    log '  <host> 请替换为客户端可访问的宿主机地址，或设置 AUTODEPLOY_HOST'
+  fi
+}

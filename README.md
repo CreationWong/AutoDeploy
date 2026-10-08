@@ -2,7 +2,7 @@
 
 一个通过 `git push` 驱动的轻量自托管部署服务。AutoDeploy 在单个容器内提供 SSH/HTTP Git 服务，收到推送后读取项目根目录的 `AutoDeploy.config.yaml`，完成构建、启动、健康检查和失败回退。
 
-> 当前版本：`V0.1.1`。[Docker Hub 镜像](https://hub.docker.com/r/creationwong/autodeploy/tags?name=V0.1.1) `creationwong/autodeploy:V0.1.1` 支持 `linux/amd64` 和 `linux/arm64`。
+> 当前版本：`V0.1.2`。[Docker Hub 镜像](https://hub.docker.com/r/creationwong/autodeploy/tags?name=V0.1.2) `creationwong/autodeploy:V0.1.2` 支持 `linux/amd64` 和 `linux/arm64`。
 
 ## 功能亮点
 
@@ -91,7 +91,7 @@ docker run -d \
   --add-host=host.docker.internal:host-gateway \
   -e AUTODEPLOY_HTTP_USER=autodeploy \
   -e AUTODEPLOY_HTTP_PASSWORD= \
-  creationwong/autodeploy:V0.1.1
+  creationwong/autodeploy:V0.1.2
 ```
 
 确认服务健康，并从首次启动日志中记录随机生成的 HTTP 密码：
@@ -159,6 +159,14 @@ docker logs autodeploy
 ```bash
 AUTODEPLOY_SSH_PORT=22022 AUTODEPLOY_HTTP_PORT=18080 docker compose up -d
 ```
+
+### 推送地址日志
+
+启动日志和 `autodeploy show` 会通过 Docker 读取当前容器实际发布的端口。例如 `-p 8096:80` 会显示 `http://autodeploy@<host>:8096/app.git`；没有发布 22 端口时会显示 SSH 未发布。HTTP 用户名来自现有凭据文件（首次创建时使用 `AUTODEPLOY_HTTP_USER`）。
+
+可用 `-e AUTODEPLOY_HOST=git.example.com` 指定客户端访问的域名/IP；未指定时，日志使用端口绑定的具体 IP，绑定在 `0.0.0.0` / `::` 则显示 `<host>` 并提示替换。容器无法可靠推断宿主机的公网 IP 或外部域名。
+
+实际端口检测需要 Docker CLI、可访问的 Docker 服务和默认容器 hostname。未挂载 `docker.sock`、构建时禁用 Docker CLI 或自定义 hostname 导致检测失败时，日志会明确显示地址模板，可用 `AUTODEPLOY_SSH_PORT` / `AUTODEPLOY_HTTP_PORT` 提供外部端口。网关模式也可设置这两个变量描述外部入口；直接发布的实际端口优先于配置值。端口在每次启动和执行 `autodeploy show` 时重新读取。
 
 ### nginx 网关（零端口，生产推荐）
 
@@ -492,8 +500,9 @@ docker exec -it autodeploy autodeploy help
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `AUTODEPLOY_SSH_PORT` | `2222` | 宿主机映射的 SSH 端口（compose 变量，容器内固定 22） |
-| `AUTODEPLOY_HTTP_PORT` | `8080` | 宿主机映射的 HTTP 端口（compose 变量，容器内固定 80） |
+| `AUTODEPLOY_SSH_PORT` | compose 发布默认 `2222`，容器内为空 | compose 的 SSH 发布端口；日志无法读取实际映射或使用外部网关时的端口提示（容器内固定 22） |
+| `AUTODEPLOY_HTTP_PORT` | compose 发布默认 `8080`，容器内为空 | compose 的 HTTP 发布端口；日志无法读取实际映射或使用外部网关时的端口提示（容器内固定 80） |
+| `AUTODEPLOY_HOST` | 空 | 日志中的外部域名/IP；留空使用具体绑定 IP，通配绑定使用 `<host>` |
 | `REPO_NAME` | `app` | 裸仓库名（`${REPO_NAME}.git`），也作为默认应用名 |
 | `DEPLOY_BRANCH` | `main` | 默认触发部署的分支，支持逗号分隔和 `*` 通配（可被 `deploy.branches` 覆盖） |
 | `DEPLOY_TAG` | 空 | 默认触发部署的标签，支持逗号分隔和 `*` 通配，空=不启用（可被 `deploy.tags` 覆盖） |
