@@ -553,6 +553,8 @@ docker exec -it autodeploy autodeploy help
 
 ## 安全说明
 
+安全问题请按 [安全政策](SECURITY.md)通过私有渠道报告。该政策也说明了支持版本和部署权限边界。
+
 - SSH 只允许 `git` 用户、仅公钥认证，shell 限制为 `git-shell`；
 - `git` 用户只能通过 sudo 免密执行 `/usr/local/bin/autodeploy-deploy`；
 - 部署脚本校验目标目录必须位于 `/data/deploy` 内；
@@ -581,7 +583,7 @@ docker exec -it autodeploy autodeploy help
 
 版本标签支持 `V0.1.3`、`v0.1.3` 和 `V0.1.3-rc.1` 等格式。镜像标签保留版本标签原文，地址为 `ghcr.io/creationwong/autodeploy:<版本标签>`。
 
-所有分支的提交，以及 PR 的创建、更新和重新打开，都会运行 CI。PR 合并后，目标分支的新提交也会运行检查。镜像发布仅由指向 main 历史提交的版本标签触发；PR、未合并分支上的标签和非版本标签均不发布镜像。
+所有分支的提交，以及 PR 的创建、更新和重新打开，都会运行 CI；仅修改文档的提交或 PR 会跳过检查。PR 合并后，目标分支的新提交也按相同规则运行检查。镜像发布仅由指向 main 历史提交的版本标签触发，并始终运行完整 CI；PR、未合并分支上的标签和非版本标签均不发布镜像。
 
 例如，`V0.1.3` 发布完成后，可运行：
 

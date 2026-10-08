@@ -7,8 +7,20 @@ name: CI checks
 on:
   push:
     branches: ['**']
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '**/*.markdown'
+      - '**/*.rst'
+      - '**/*.adoc'
   pull_request:
     types: [opened, synchronize, reopened, edited]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '**/*.markdown'
+      - '**/*.rst'
+      - '**/*.adoc'
   workflow_call:
     inputs:
       revision:
