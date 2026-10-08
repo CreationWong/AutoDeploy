@@ -20,12 +20,21 @@ docker run -d \
   --env AUTODEPLOY_HTTP_PASSWORD=test-placeholder \
   "$image" >/dev/null
 
-for _ in $(seq 1 30); do
-  if docker exec "$container" test -d /data/deploy 2>/dev/null; then
+# Directory creation precedes chown; wait for initialization to finish, which
+# is especially important when testing a foreign architecture under emulation.
+ready=0
+for _ in $(seq 1 60); do
+  output="$(docker logs "$container" 2>&1)"
+  if [[ "$output" == *'启动完成'* ]]; then
+    ready=1
     break
   fi
-  sleep 0.2
+  sleep 0.5
 done
+if [ "$ready" != 1 ]; then
+  printf 'container failed to initialize:\n%s\n' "$output" >&2
+  exit 1
+fi
 
 if ! docker exec --user git "$container" sh -c \
   'mkdir -p /data/deploy/.versions/fresh-volume-test && mktemp -d /data/deploy/.versions/fresh-volume-test/.staging-XXXXXX >/dev/null'; then
