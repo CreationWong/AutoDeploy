@@ -9,6 +9,8 @@ ENV_FILE="/etc/autodeploy/env"
 SUPERVISOR_CONF_DIR="/etc/supervisor/conf.d"
 SUPERVISOR_CTL_CONF="/etc/supervisor/supervisord.conf"
 DEFAULT_PATH="$PATH"
+# shellcheck source=scripts/autodeploy-runtime
+. /usr/local/bin/autodeploy-runtime
 
 STATE_NAME=""
 STATE_COMMIT=""
@@ -649,6 +651,16 @@ wait_for_program() {
   return 1
 }
 
+write_process_header() {
+  local workdir="$1" user_home="$2"
+  printf '#!/bin/bash\nset -e\n'
+  printf 'cd %q\n' "$workdir"
+  printf 'export HOME=%q\n' "$user_home"
+  printf 'export LANG=C.UTF-8\n'
+  printf 'export PATH=%q\n' "$DEFAULT_PATH"
+  write_env_exports
+}
+
 deploy_process() {
   local name="$1" workdir_rel workdir app_user user_home start program
   local state_dir="$STATE_DIR" header start_sh supervisor_conf
@@ -664,9 +676,9 @@ deploy_process() {
     return 1
   fi
 
-  app_user="$(cfg_str '.user' "${AUTODEPLOY_APP_USER:-git}")"
-  if ! id "$app_user" >/dev/null 2>&1; then
-    log "错误: 运行用户不存在: $app_user"
+  app_user="$(cfg_str '.user' "${AUTODEPLOY_APP_USER:-autodeploy-app}")"
+  if ! autodeploy_runtime_user_allowed "$app_user"; then
+    log "错误: 运行用户不存在或具有部署/管理权限: $app_user（请使用独立业务用户）"
     return 1
   fi
   user_home="$(getent passwd "$app_user" | cut -d: -f6)"
@@ -682,40 +694,38 @@ deploy_process() {
 
   local log_dir="$DATA_DIR/logs/$name"
   mkdir -p "$state_dir" "$log_dir"
-  chown "$app_user" "$log_dir"
-  chmod 750 "$log_dir"
 
   header="$RUN_DIR/header.sh"
-  {
-    printf '#!/bin/bash\nset -e\n'
-    printf 'cd %q\n' "$workdir"
-    printf 'export HOME=%q\n' "$user_home"
-    printf 'export LANG=C.UTF-8\n'
-    printf 'export PATH=%q\n' "$DEFAULT_PATH"
-    write_env_exports
-  } > "$header"
-  chown "$app_user" "$header"
+  # install/build are trusted deployment code. The runtime only reads their tree.
+  write_process_header "$workdir" "$(getent passwd git | cut -d: -f6)" > "$header"
+  chown git:git "$header"
   chmod 700 "$header"
 
   if [ "$ROLLING_BACK" != "1" ]; then
-    run_phase '.install' "$app_user" "执行 install 命令" "$header" || return 1
-    run_phase '.build' "$app_user" "执行 build 命令" "$header" || return 1
+    run_phase '.install' git "执行 install 命令" "$header" || return 1
+    run_phase '.build' git "执行 build 命令" "$header" || return 1
   fi
 
+  if ! autodeploy_prepare_runtime_tree "$TARGET_REAL"; then
+    log "错误: 无法保护业务部署目录"
+    return 1
+  fi
   start_sh="$state_dir/start.sh"
   {
-    cat "$header"
+    write_process_header "$workdir" "$user_home"
     printf 'exec %s\n' "$start"
   } > "$start_sh"
-  chown "$app_user" "$start_sh"
-  chmod 700 "$start_sh"
+  if ! autodeploy_secure_runtime_files "$app_user" "$state_dir" "$log_dir"; then
+    log "错误: 无法保护业务启动脚本或日志路径"
+    return 1
+  fi
   rm -f "$header"
 
   program="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_-]/-/g')"
   supervisor_conf="$state_dir/supervisor.conf"
   cat > "$supervisor_conf" <<EOF
 [program:$program]
-command=/usr/bin/env -i /bin/bash $start_sh
+command=/usr/bin/setpriv --no-new-privs /usr/bin/env -i /bin/bash $start_sh
 directory=$workdir
 user=$app_user
 autostart=true

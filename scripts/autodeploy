@@ -37,6 +37,7 @@ write_env_file() {
     printf 'DEPLOY_TAG=%q\n' "$DEPLOY_TAG"
     printf 'DEPLOY_TAG_MODE=%q\n' "$DEPLOY_TAG_MODE"
     printf 'AUTODEPLOY_CONFIG_NAME=%q\n' "$AUTODEPLOY_CONFIG_NAME"
+    printf 'AUTODEPLOY_APP_USER=%q\n' "${AUTODEPLOY_APP_USER:-autodeploy-app}"
   } > "$tmp"
   chown root:git "$tmp" 2>/dev/null || true
   chmod 640 "$tmp"

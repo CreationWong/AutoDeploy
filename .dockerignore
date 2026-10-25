@@ -6,4 +6,5 @@ opencode.json
 README.md
 docker-compose.yml
 docker-compose.gateway.yml
+docker-compose.docker.yml
 *.log

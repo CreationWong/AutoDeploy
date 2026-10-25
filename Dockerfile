@@ -54,8 +54,9 @@ RUN set -eux; \
     if ! id git >/dev/null 2>&1; then \
       useradd --create-home --home-dir /data/git-home --shell /usr/bin/git-shell git; \
     fi; \
+    useradd --create-home --user-group --home-dir /home/autodeploy-app --shell /usr/sbin/nologin autodeploy-app; \
+    chmod 700 /home/autodeploy-app; \
     mkdir -p /data /etc/autodeploy /var/log/autodeploy /var/log/supervisor; \
-    chown -R git:git /data /var/log/autodeploy; \
     rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 
 COPY conf/sshd_config /etc/ssh/sshd_config
@@ -73,6 +74,7 @@ RUN set -eux; \
 COPY scripts/autodeploy-deploy /usr/local/bin/autodeploy-deploy
 COPY scripts/autodeploy /usr/local/bin/autodeploy
 COPY scripts/autodeploy-endpoints /usr/local/bin/autodeploy-endpoints
+COPY scripts/autodeploy-runtime /usr/local/bin/autodeploy-runtime
 COPY scripts/post-receive /usr/local/bin/autodeploy-post-receive
 COPY entrypoint.sh /usr/local/bin/autodeploy-entrypoint
 
@@ -80,6 +82,7 @@ RUN chmod 755 \
       /usr/local/bin/autodeploy-deploy \
       /usr/local/bin/autodeploy \
       /usr/local/bin/autodeploy-endpoints \
+      /usr/local/bin/autodeploy-runtime \
       /usr/local/bin/autodeploy-post-receive \
       /usr/local/bin/autodeploy-entrypoint
 

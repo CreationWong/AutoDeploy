@@ -13,6 +13,8 @@ log() { printf '[AutoDeploy] %s\n' "$*"; }
 warn() { printf '[AutoDeploy] 警告: %s\n' "$*" >&2; }
 # shellcheck source=scripts/autodeploy-endpoints
 . /usr/local/bin/autodeploy-endpoints
+# shellcheck source=scripts/autodeploy-runtime
+. /usr/local/bin/autodeploy-runtime
 
 SETTINGS_FILE="$DATA_DIR/settings.env"
 if [ -r "$SETTINGS_FILE" ]; then
@@ -42,8 +44,10 @@ fi
 
 GIT_HOME="$DATA_DIR/git-home"
 mkdir -p "$GIT_HOME/.ssh"
+chown root:root "$DATA_DIR" "$DATA_DIR/state" "$DATA_DIR/logs" "$DATA_DIR/ssh"
+chmod 755 "$DATA_DIR" "$DATA_DIR/state" "$DATA_DIR/logs"
+chmod 700 "$DATA_DIR/ssh"
 chown "$SSH_USER:$SSH_USER" \
-  "$DATA_DIR" \
   "$DATA_DIR/deploy" \
   "$DATA_DIR/deploy/.versions"
 chown -R "$SSH_USER:$SSH_USER" "$GIT_HOME"
@@ -74,19 +78,26 @@ if [ ! -s "$AUTH_KEYS" ]; then
 fi
 
 HTPASSWD="$DATA_DIR/htpasswd"
+PASSWORD_DIR="$DATA_DIR/credentials"
+PASSWORD_FILE="$PASSWORD_DIR/http-password"
+if [ -L "$PASSWORD_DIR" ] || [ -L "$PASSWORD_FILE" ] || [ -L "$HTPASSWD" ]; then
+  warn "拒绝初始化 HTTP 凭据：凭据路径不能是符号链接"
+  exit 1
+fi
+install -d -m 700 -o root -g root "$PASSWORD_DIR"
 HTTP_USER="${AUTODEPLOY_HTTP_USER:-autodeploy}"
 if [ -n "${AUTODEPLOY_HTTP_PASSWORD:-}" ]; then
-  htpasswd -bc "$HTPASSWD" "$HTTP_USER" "$AUTODEPLOY_HTTP_PASSWORD" >/dev/null
+  printf '%s\n' "$AUTODEPLOY_HTTP_PASSWORD" | htpasswd -iBc "$HTPASSWD" "$HTTP_USER" >/dev/null
+  rm -f "$PASSWORD_FILE"
   log "已用 AUTODEPLOY_HTTP_PASSWORD 更新 HTTP 凭据，用户名: $HTTP_USER"
 elif [ ! -s "$HTPASSWD" ]; then
   RANDOM_PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -d '/+=\n')"
-  htpasswd -bc "$HTPASSWD" "$HTTP_USER" "$RANDOM_PASSWORD" >/dev/null
-  log "================================================================"
-  log "HTTP 推送密码已随机生成（仅本次启动日志显示，请及时记录）"
-  log "  随机源: /dev/urandom（无固定种子）"
-  log "  用户名: $HTTP_USER"
-  log "  密  码: $RANDOM_PASSWORD"
-  log "================================================================"
+  (umask 077; printf '%s\n' "$RANDOM_PASSWORD" > "$PASSWORD_FILE")
+  chown root:root "$PASSWORD_FILE"
+  chmod 600 "$PASSWORD_FILE"
+  printf '%s\n' "$RANDOM_PASSWORD" | htpasswd -iBc "$HTPASSWD" "$HTTP_USER" >/dev/null
+  log "HTTP 推送密码已随机生成，用户名: $HTTP_USER"
+  log "请以 root 读取 $PASSWORD_FILE（密码不写入日志）"
 else
   HTTP_USER="$(autodeploy_http_user)"
   log "复用已有 HTTP 凭据文件: $HTPASSWD（用户名: $HTTP_USER）"
@@ -103,6 +114,7 @@ unset AUTODEPLOY_HTTP_PASSWORD RANDOM_PASSWORD
   printf 'DEPLOY_TAG=%q\n' "$DEPLOY_TAG"
   printf 'DEPLOY_TAG_MODE=%q\n' "$DEPLOY_TAG_MODE"
   printf 'AUTODEPLOY_CONFIG_NAME=%q\n' "$CONFIG_NAME"
+  printf 'AUTODEPLOY_APP_USER=%q\n' "${AUTODEPLOY_APP_USER:-autodeploy-app}"
 } > /etc/autodeploy/env
 chown root:"$SSH_USER" /etc/autodeploy/env
 chmod 640 /etc/autodeploy/env
@@ -195,6 +207,46 @@ if [ "$RESTORE_ENV" = "1" ] && [ -f "$DATA_DIR/deploy/${REPO_NAME}/${CONFIG_NAME
     warn "基础环境恢复失败，应用可能无法启动"
   fi
 fi
+
+# Upgrade persisted process snapshots before Supervisor starts them. Old versions
+# used git (or root), so changing only the deployment default would leave them privileged.
+for app_conf in "$DATA_DIR"/state/*/supervisor.conf; do
+  [ -f "$app_conf" ] || continue
+  state_dir="$(dirname "$app_conf")"
+  state_name="$(basename "$state_dir")"
+  runtime_user="$(sed -n 's/^user=//p' "$app_conf")"
+  runtime_uid="$(id -u "$runtime_user" 2>/dev/null || true)"
+  if [ "$runtime_uid" = 0 ] || [ "$runtime_uid" = "$(id -u git)" ]; then
+    runtime_user="${AUTODEPLOY_APP_USER:-autodeploy-app}"
+    if autodeploy_runtime_user_allowed "$runtime_user" && [ -f "$state_dir/start.sh" ]; then
+      sed -i "s/^user=.*/user=$runtime_user/" "$app_conf"
+      runtime_home="$(getent passwd "$runtime_user" | cut -d: -f6)"
+      migrated_start="$(mktemp "$state_dir/.start.XXXXXX")"
+      home_replaced=0
+      while IFS= read -r line || [ -n "$line" ]; do
+        if [ "$home_replaced" = 0 ] && [[ "$line" == 'export HOME='* ]]; then
+          printf 'export HOME=%q\n' "$runtime_home"
+          home_replaced=1
+        else
+          printf '%s\n' "$line"
+        fi
+      done < "$state_dir/start.sh" > "$migrated_start"
+      mv "$migrated_start" "$state_dir/start.sh"
+      log "已迁移业务运行身份: $state_name -> $runtime_user"
+    fi
+  fi
+  runtime_directory="$(yq -r '.directory // ""' "$state_dir/deploy.json" 2>/dev/null || true)"
+  sed -i 's|^command=/usr/bin/env -i /bin/bash |command=/usr/bin/setpriv --no-new-privs /usr/bin/env -i /bin/bash |' "$app_conf"
+  if ! autodeploy_runtime_user_allowed "$runtime_user" || \
+     ! autodeploy_prepare_runtime_tree "$runtime_directory" || \
+     ! autodeploy_secure_runtime_files "$runtime_user" "$state_dir" "$DATA_DIR/logs/$state_name"; then
+    warn "运行身份或文件权限不安全，已禁用自动启动: $state_name"
+    rm -f "/etc/supervisor/conf.d/autodeploy-${state_name}.conf"
+    # Program names historically normalize dots to hyphens.
+    program="autodeploy-$(printf '%s' "$state_name" | sed 's/[^A-Za-z0-9_-]/-/g')"
+    rm -f "/etc/supervisor/conf.d/$program.conf"
+  fi
+done
 
 autodeploy_log_endpoints
 log "启动完成，扫描到配置 ${CONFIG_NAME} 才会部署"

@@ -4,7 +4,8 @@ services:
     container_name: autodeploy-gateway
     restart: unless-stopped
     ports:
-      - "${GATEWAY_HTTP_PORT:-8080}:80"
+      # 生产环境在本机入口前终止 TLS，或直接使用 SSH 推送。
+      - "127.0.0.1:${GATEWAY_HTTP_PORT:-8080}:80"
       - "${GATEWAY_SSH_PORT:-2222}:22"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro

@@ -1,0 +1,5 @@
+# 仅在需要 type: docker-compose 时显式启用；此挂载授予 Docker 管理权限。
+services:
+  autodeploy:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

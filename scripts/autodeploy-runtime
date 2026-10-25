@@ -1,0 +1,47 @@
+#!/bin/bash
+# Runtime accounts must not share the deployment or Docker control identity.
+autodeploy_runtime_user_allowed() {
+  local user="$1" uid git_uid groups group record gid
+  [[ "$user" =~ ^[A-Za-z_][A-Za-z0-9_-]*\$?$ ]] || return 1
+  uid="$(id -u "$user" 2>/dev/null)" || return 1
+  git_uid="$(id -u git)" || return 1
+  [ "$uid" != 0 ] && [ "$uid" != "$git_uid" ] || return 1
+  groups=" $(id -G "$user") " || return 1
+  for group in root git docker sudo wheel; do
+    record="$(getent group "$group" || true)"
+    [ -n "$record" ] || continue
+    IFS=: read -r _ _ gid _ <<< "$record"
+    [[ "$groups" != *" $gid "* ]] || return 1
+  done
+}
+
+autodeploy_prepare_runtime_tree() {
+  local directory deploy_root
+  directory="$(realpath -e -- "$1")" || return 1
+  deploy_root="$(realpath -m -- "${DATA_DIR:-/data}/deploy")" || return 1
+  case "$directory" in "$deploy_root"/*) ;; *) return 1 ;; esac
+  # mktemp staging roots are 0700. Builds may also produce private or writable
+  # files: publish a readable tree owned by the trusted deployment identity.
+  chown -R git:git "$directory" || return 1
+  chmod -R a+rX,go-w "$directory" || return 1
+}
+
+autodeploy_secure_runtime_files() {
+  local user="$1" state_dir="$2" log_dir="$3" group file
+  autodeploy_runtime_user_allowed "$user" || return 1
+  group="$(id -gn "$user")" || return 1
+  for file in "$state_dir" "$state_dir/start.sh" "$log_dir" "$log_dir/app.log" "$log_dir/app.err.log"; do
+    [ ! -L "$file" ] || return 1
+  done
+  # Supervisor opens logs as root: the application must not replace them with links.
+  chown root:root "$state_dir" || return 1
+  chmod 755 "$state_dir" || return 1
+  chown "root:$group" "$state_dir/start.sh" "$log_dir" || return 1
+  chmod 640 "$state_dir/start.sh" || return 1
+  chmod 750 "$log_dir" || return 1
+  for file in "$log_dir/app.log" "$log_dir/app.err.log"; do
+    touch "$file" || return 1
+    chown "root:$group" "$file" || return 1
+    chmod 640 "$file" || return 1
+  done
+}

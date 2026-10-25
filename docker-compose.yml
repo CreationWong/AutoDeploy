@@ -10,13 +10,12 @@ services:
     restart: unless-stopped
     ports:
       - "${AUTODEPLOY_SSH_PORT:-2222}:22"
-      - "${AUTODEPLOY_HTTP_PORT:-8080}:80"
+      # 明文 HTTP 仅供本机访问；远程推送使用 SSH 或 HTTPS 网关。
+      - "127.0.0.1:${AUTODEPLOY_HTTP_PORT:-8080}:80"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - autodeploy-data:/data
-      # docker-compose 类型部署需要宿主机 docker.sock；不使用可删除
-      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       # 日志优先读取实际映射；显式设置的值也可描述外部网关入口。
       AUTODEPLOY_SSH_PORT: ${AUTODEPLOY_SSH_PORT:-}
@@ -27,10 +26,11 @@ services:
       DEPLOY_TAG: ${DEPLOY_TAG:-}
       DEPLOY_TAG_MODE: ${DEPLOY_TAG_MODE:-commit}
       AUTODEPLOY_HTTP_USER: ${AUTODEPLOY_HTTP_USER:-autodeploy}
-      # 留空则首次启动随机生成密码并打印到容器日志
+      # 留空则生成密码，保存到 /data/credentials/http-password（root-only）。
       AUTODEPLOY_HTTP_PASSWORD: ${AUTODEPLOY_HTTP_PASSWORD:-}
       AUTHORIZED_KEYS: ${AUTHORIZED_KEYS:-}
       AUTODEPLOY_CONFIG_NAME: ${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}
+      AUTODEPLOY_APP_USER: ${AUTODEPLOY_APP_USER:-autodeploy-app}
 
 volumes:
   autodeploy-data:
