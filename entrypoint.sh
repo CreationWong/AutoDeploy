@@ -29,6 +29,8 @@ if [ -r "$SETTINGS_FILE" ]; then
   log "已加载持久化设置: $SETTINGS_FILE"
 fi
 
+autodeploy_validate_settings "$REPO_NAME" "$CONFIG_NAME" "$DEPLOY_TAG_MODE"
+
 mkdir -p "$DATA_DIR"/{git-home,deploy/.versions,state,logs,ssh} \
          /etc/autodeploy /etc/supervisor/conf.d /var/log/autodeploy /var/log/supervisor /run/sshd
 chmod 755 /run/sshd

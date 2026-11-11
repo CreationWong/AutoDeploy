@@ -40,6 +40,7 @@ if [ -r "$ENV_FILE" ]; then
 fi
 REPO_NAME="${REPO_NAME:-app}"
 CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
+autodeploy_validate_settings "$REPO_NAME" "$CONFIG_NAME" "${DEPLOY_TAG_MODE:-commit}"
 
 log() {
   local line="[AutoDeploy] $*"
@@ -337,6 +338,7 @@ restore_environment() {
   deploy_root="$(realpath -m -- "$DATA_DIR/deploy")"
   case "$TARGET" in "$deploy_root"/*) ;; *) die "拒绝恢复: 项目目录越界" ;; esac
   CFG="$TARGET/$CONFIG_NAME"
+  [ ! -L "$CFG" ] || die "$CONFIG_NAME 不能是符号链接"
   if [ ! -f "$CFG" ]; then
     return 0
   fi
@@ -929,6 +931,7 @@ main() {
   TARGET="$TARGET_REAL"
 
   CFG="$TARGET/$CONFIG_NAME"
+  [ ! -L "$CFG" ] || die "$CONFIG_NAME 不能是符号链接"
   if [ ! -f "$CFG" ]; then
     log "未找到 $CONFIG_NAME，跳过部署"
     return 0

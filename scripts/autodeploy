@@ -9,6 +9,8 @@ GIT_HOME="$DATA_DIR/git-home"
 log() { printf '[AutoDeploy] %s\n' "$*"; }
 # shellcheck source=scripts/autodeploy-endpoints
 . /usr/local/bin/autodeploy-endpoints
+# shellcheck source=scripts/autodeploy-runtime
+. /usr/local/bin/autodeploy-runtime
 
 load_settings() {
   if [ -r "$ENV_FILE" ]; then
@@ -26,6 +28,7 @@ load_settings() {
   DEPLOY_TAG="${DEPLOY_TAG:-}"
   DEPLOY_TAG_MODE="${DEPLOY_TAG_MODE:-commit}"
   AUTODEPLOY_CONFIG_NAME="${AUTODEPLOY_CONFIG_NAME:-AutoDeploy.config.yaml}"
+  autodeploy_validate_settings "$REPO_NAME" "$AUTODEPLOY_CONFIG_NAME" "$DEPLOY_TAG_MODE"
 }
 
 write_env_file() {
@@ -126,16 +129,13 @@ cmd_set() {
 
   case "$key" in
     REPO_NAME)
-      if ! [[ "$value" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-        echo "REPO_NAME 非法（仅字母数字下划线点和连字符）: $value" >&2
-        return 1
-      fi
+      autodeploy_validate_settings "$value" "$AUTODEPLOY_CONFIG_NAME" "$DEPLOY_TAG_MODE" || return 1
       ;;
     AUTODEPLOY_CONFIG_NAME)
-      case "$value" in */*) echo "配置名不能包含 /: $value" >&2; return 1 ;; esac
+      autodeploy_validate_settings "$REPO_NAME" "$value" "$DEPLOY_TAG_MODE" || return 1
       ;;
     DEPLOY_TAG_MODE)
-      case "$value" in commit|branch) ;; *) echo "DEPLOY_TAG_MODE 只能是 commit 或 branch: $value" >&2; return 1 ;; esac
+      autodeploy_validate_settings "$REPO_NAME" "$AUTODEPLOY_CONFIG_NAME" "$value" || return 1
       ;;
   esac
 

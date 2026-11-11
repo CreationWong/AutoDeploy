@@ -1,9 +1,6 @@
 ARG BASE_IMAGE=debian:bookworm-slim
 FROM ${BASE_IMAGE}
 
-ARG INSTALL_DOCKER_CLI=1
-ARG YQ_VERSION=v4.44.3
-
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     AUTODEPLOY_DATA_DIR=/data
@@ -15,7 +12,6 @@ RUN apt-get update \
       curl \
       fcgiwrap \
       git \
-      gnupg \
       nginx \
       openssh-server \
       sudo \
@@ -23,6 +19,7 @@ RUN apt-get update \
       util-linux \
  && rm -rf /var/lib/apt/lists/*
 
+ARG INSTALL_DOCKER_CLI=0
 RUN set -eux; \
     if [ "$INSTALL_DOCKER_CLI" = "1" ]; then \
       . /etc/os-release; \
@@ -39,6 +36,7 @@ RUN set -eux; \
       rm -rf /var/lib/apt/lists/*; \
     fi
 
+ARG YQ_VERSION=v4.44.3
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
