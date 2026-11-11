@@ -2,7 +2,7 @@
 
 一个通过 `git push` 驱动的轻量自托管部署服务。AutoDeploy 在单个容器内提供 SSH/HTTP Git 服务，收到推送后读取项目根目录的 `AutoDeploy.config.yaml`，完成构建、启动、健康检查和失败回退。
 
-> 当前版本：`V0.1.2`。[Docker Hub 镜像](https://hub.docker.com/r/creationwong/autodeploy/tags?name=V0.1.2) `creationwong/autodeploy:V0.1.2` 支持 `linux/amd64` 和 `linux/arm64`。
+> 当前版本：`V0.1.3`。[Docker Hub 镜像](https://hub.docker.com/r/creationwong/autodeploy/tags?name=V0.1.3) `creationwong/autodeploy:V0.1.3` 支持 `linux/amd64` 和 `linux/arm64`。
 
 Copyright (C) 2026 CreationWong。项目采用 [GNU General Public License 第 3 版](LICENSE)（`GPL-3.0-only`）。
 
@@ -95,7 +95,7 @@ docker run -d \
   --add-host=host.docker.internal:host-gateway \
   -e AUTODEPLOY_HTTP_USER=autodeploy \
   -e AUTODEPLOY_HTTP_PASSWORD= \
-  creationwong/autodeploy:V0.1.2
+  creationwong/autodeploy:V0.1.3
 ```
 
 确认服务健康，并从首次启动日志中记录随机生成的 HTTP 密码：

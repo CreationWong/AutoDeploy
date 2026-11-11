@@ -87,7 +87,7 @@ RUN chmod 755 \
       /usr/local/bin/autodeploy-post-receive \
       /usr/local/bin/autodeploy-entrypoint
 
-ARG VERSION=V0.1.2
+ARG VERSION=V0.1.3
 ARG REVISION=unknown
 LABEL org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
