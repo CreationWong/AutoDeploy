@@ -20,6 +20,9 @@ AllowUsers git
 AuthorizedKeysFile /data/git-home/.ssh/authorized_keys
 StrictModes yes
 
+DisableForwarding yes
+PermitTTY no
+PermitUserRC no
 X11Forwarding no
 AllowAgentForwarding no
 AllowTcpForwarding no

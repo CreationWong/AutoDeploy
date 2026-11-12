@@ -1,0 +1,6 @@
+# These files execute or are parsed inside the Linux container, including when
+# the image is built from a Windows checkout.
+Dockerfile text eol=lf
+*.sh text eol=lf
+scripts/* text eol=lf
+conf/* text eol=lf

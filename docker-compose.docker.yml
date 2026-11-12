@@ -1,0 +1,8 @@
+# 仅在需要 type: docker-compose 时显式启用；此挂载授予 Docker 管理权限。
+services:
+  autodeploy:
+    build:
+      args:
+        INSTALL_DOCKER_CLI: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

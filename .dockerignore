@@ -2,12 +2,23 @@
 # Copyright (C) 2026 CreationWong
 # See LICENSE for the license terms and warranty disclaimer.
 
-.git
-.gitignore
-AGENTS.md
-examples
-opencode.json
-README.md
-docker-compose.yml
-docker-compose.gateway.yml
-*.log
+# Only runtime inputs belong in the build context (never local secrets or tools).
+**
+!Dockerfile
+!.dockerignore
+!entrypoint.sh
+!scripts/
+scripts/**
+!scripts/autodeploy
+!scripts/autodeploy-deploy
+!scripts/autodeploy-endpoints
+!scripts/autodeploy-runtime
+!scripts/post-receive
+!conf/
+conf/**
+!conf/nginx-autodeploy.conf
+!conf/supervisord.conf
+!conf/sshd_config
+!conf/autodeploy.sudoers
+!LICENSE
+!NOTICE

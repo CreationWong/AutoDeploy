@@ -7,6 +7,7 @@
 
 import argparse
 import ast
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -22,6 +23,7 @@ def run(*args: str, cwd: Path = ROOT, **kwargs) -> subprocess.CompletedProcess:
 def lint() -> None:
     scripts = [ROOT / "entrypoint.sh", *sorted((ROOT / "scripts").iterdir())]
     scripts += sorted((ROOT / "examples/sample-app/.AutoDeploy").glob("*.sh"))
+    scripts += sorted((ROOT / "tests").glob("*.sh"))
     for script in scripts:
         run("bash", "-n", str(script))
     run("shellcheck", "-S", "error", *(str(script) for script in scripts))
@@ -33,6 +35,8 @@ def lint() -> None:
 
 def unit() -> None:
     run(sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v")
+    for script in ("runtime-users.sh", "settings-validation.sh"):
+        run("bash", str(ROOT / "tests" / script))
 
 
 def scanner_selftest() -> None:
@@ -51,13 +55,23 @@ def scanner_selftest() -> None:
     print("敏感信息扫描器的正向和负向校验通过。")
 
 
-def containers(image: str, build: bool, platform: str | None) -> None:
+def containers(image: str, build: bool, platform: str | None, docker_cli: str) -> None:
     if build:
-        command = ["docker", "build", "-t", image]
+        command = ["docker", "build", "--build-arg", f"INSTALL_DOCKER_CLI={docker_cli}", "-t", image]
         if platform:
             command += ["--platform", platform]
         run(*command, ".")
-    run(sys.executable, "-B", "tests/container_checks.py", image, *(["--platform", platform] if platform else []))
+    run(sys.executable, "-B", "tests/container_checks.py", image,
+        *(["--platform", platform] if platform else []),
+        *(["--skip-endpoints"] if docker_cli == "0" else []))
+    env = os.environ.copy()
+    if platform:
+        env["DOCKER_DEFAULT_PLATFORM"] = platform
+    for script in ("runtime-security.sh", "deployment-preflight.sh"):
+        run("bash", str(ROOT / "tests" / script), image, env=env)
+    if docker_cli == "0":
+        run("docker", "pull", "nginx:1.27-alpine", env=env)
+        run("bash", str(ROOT / "tests/gateway-security.sh"), image, env=env)
 
 
 def main() -> None:
@@ -68,11 +82,12 @@ def main() -> None:
     container = commands.add_parser("containers")
     container.add_argument("--image", default="autodeploy:ci")
     container.add_argument("--build", action="store_true")
+    container.add_argument("--docker-cli", choices=["0", "1"], default="0")
     container.add_argument("--platform", choices=["linux/amd64", "linux/arm64"])
     args = parser.parse_args()
     try:
         if args.command == "containers":
-            containers(args.image, args.build, args.platform)
+            containers(args.image, args.build, args.platform, args.docker_cli)
         else:
             {"lint": lint, "unit": unit, "scanner-selftest": scanner_selftest}[args.command]()
     except (subprocess.CalledProcessError, RuntimeError, OSError) as exc:

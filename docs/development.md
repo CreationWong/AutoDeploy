@@ -11,14 +11,15 @@ python3 -B ci/checks.py lint
 python3 -B ci/checks.py unit
 python3 -B ci/checks.py scanner-selftest
 python3 -B ci/checks.py containers --build
+python3 -B ci/checks.py containers --build --docker-cli 1 --image autodeploy:ci-docker
 ```
 
 | 检查 | 覆盖内容 |
 | --- | --- |
 | `lint` | 部署脚本的 Bash 语法、ShellCheck，以及 Python 文件语法 |
-| `unit` | 推送地址日志、版本号格式、标签与 main 的 Git 历史关系 |
+| `unit` | 推送地址日志、版本号格式、标签与 main 的 Git 历史关系、运行身份与配置校验 |
 | `scanner-selftest` | 确认敏感信息扫描器接受正常文件并拒绝测试密钥 |
-| `containers` | 在真实容器中验证全新数据卷权限及推送端口日志 |
+| `containers` | 在真实容器中验证全新数据卷权限、运行隔离、升级迁移、Git 部署预检；轻量镜像验证网关认证与上传限制，Docker CLI 镜像验证实际推送端口 |
 
 容器检查使用独立的临时容器和数据卷，完成后自动清理。`--build` 构建 `autodeploy:ci`；如已有镜像，可使用 `--image <镜像>`。指定 `--platform linux/amd64` 或 `--platform linux/arm64` 可以分别验证两个架构；测试其他架构时，Docker 必须具备相应模拟器。
 

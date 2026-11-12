@@ -31,6 +31,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -46,13 +50,18 @@ jobs:
 
   containers:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        docker-cli: ["0", "1"]
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.revision || github.sha }}
           persist-credentials: false
       - name: Build image and check container behavior
-        run: python3 -B ci/checks.py containers --build
+        run: python3 -B ci/checks.py containers --build --docker-cli ${{ matrix.docker-cli }}
 
   secret-scan-selftest:
     runs-on: ubuntu-latest
