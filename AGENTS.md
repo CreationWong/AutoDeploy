@@ -10,7 +10,7 @@
 ## 关键约定
 
 - AutoDeploy 自身默认只暴露 Git 端口；业务端口由项目自己的 compose `ports` 发布，或让项目接入外部 nginx 网关网络（零端口暴露）。
-- 详细用法与字段说明见 `README.md`。
+- 产品入口见 `README.md`；入门步骤见 `docs/getting-started.md`，字段说明见 `docs/configuration.md`，开发与发布见 `docs/development.md`。
 
 ## 提交/推送前检查
 
