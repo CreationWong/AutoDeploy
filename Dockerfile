@@ -61,10 +61,10 @@ RUN set -eux; \
     mkdir -p /data /etc/autodeploy /var/log/autodeploy /var/log/supervisor; \
     rm -f /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 
-COPY conf/sshd_config /etc/ssh/sshd_config
-COPY conf/supervisord.conf /etc/supervisor/supervisord.conf
-COPY conf/nginx-autodeploy.conf /etc/nginx/conf.d/autodeploy.conf
-COPY conf/autodeploy.sudoers /etc/sudoers.d/autodeploy
+COPY src/conf/sshd_config /etc/ssh/sshd_config
+COPY src/conf/supervisord.conf /etc/supervisor/supervisord.conf
+COPY src/conf/nginx-autodeploy.conf /etc/nginx/conf.d/autodeploy.conf
+COPY src/conf/autodeploy.sudoers /etc/sudoers.d/autodeploy
 
 RUN set -eux; \
     rm -f /etc/nginx/sites-enabled/default; \
@@ -73,18 +73,20 @@ RUN set -eux; \
     chmod 440 /etc/sudoers.d/autodeploy; \
     visudo -cf /etc/sudoers.d/autodeploy
 
-COPY scripts/autodeploy-deploy /usr/local/bin/autodeploy-deploy
-COPY scripts/autodeploy /usr/local/bin/autodeploy
-COPY scripts/autodeploy-endpoints /usr/local/bin/autodeploy-endpoints
-COPY scripts/autodeploy-runtime /usr/local/bin/autodeploy-runtime
-COPY scripts/post-receive /usr/local/bin/autodeploy-post-receive
-COPY entrypoint.sh /usr/local/bin/autodeploy-entrypoint
+COPY src/scripts/autodeploy-deploy /usr/local/bin/autodeploy-deploy
+COPY src/scripts/autodeploy /usr/local/bin/autodeploy
+COPY src/scripts/autodeploy-endpoints /usr/local/bin/autodeploy-endpoints
+COPY src/scripts/autodeploy-i18n /usr/local/bin/autodeploy-i18n
+COPY src/scripts/autodeploy-runtime /usr/local/bin/autodeploy-runtime
+COPY src/scripts/post-receive /usr/local/bin/autodeploy-post-receive
+COPY src/entrypoint.sh /usr/local/bin/autodeploy-entrypoint
 
 RUN chmod 755 \
       /usr/local/bin/autodeploy-deploy \
       /usr/local/bin/autodeploy \
       /usr/local/bin/autodeploy-endpoints \
       /usr/local/bin/autodeploy-runtime \
+      /usr/local/bin/autodeploy-i18n \
       /usr/local/bin/autodeploy-post-receive \
       /usr/local/bin/autodeploy-entrypoint
 
@@ -98,9 +100,10 @@ LABEL org.opencontainers.image.version="${VERSION}" \
 
 # Ship the license and AutoDeploy's corresponding source/build files together.
 COPY LICENSE NOTICE /usr/share/doc/autodeploy/
-COPY Dockerfile .dockerignore entrypoint.sh LICENSE NOTICE /usr/share/doc/autodeploy/source/
-COPY scripts/ /usr/share/doc/autodeploy/source/scripts/
-COPY conf/ /usr/share/doc/autodeploy/source/conf/
+COPY Dockerfile .dockerignore LICENSE NOTICE /usr/share/doc/autodeploy/source/
+COPY src/entrypoint.sh /usr/share/doc/autodeploy/source/src/
+COPY src/scripts/ /usr/share/doc/autodeploy/source/src/scripts/
+COPY src/conf/ /usr/share/doc/autodeploy/source/src/conf/
 
 EXPOSE 22 80
 

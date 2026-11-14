@@ -1,4 +1,6 @@
 #!/bin/bash
+# shellcheck source=src/scripts/autodeploy-i18n
+. "${BASH_SOURCE[0]%/*}/autodeploy-i18n"
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 CreationWong
 #
@@ -49,7 +51,7 @@ autodeploy_log_endpoint() {
     url="${scheme}://${username}@${host}:${port}${path}"
     [ -z "${seen[$url]:-}" ] || continue
     seen["$url"]=1
-    log "$protocol 推送地址: $url$suffix"
+    log "$(autodeploy_msg '%s push address: %s%s' "$protocol" "$url" "$suffix")"
     found=1
   done < <(printf '%s\n' "$bindings")
   [ "$found" = 0 ] || return 0
@@ -58,13 +60,13 @@ autodeploy_log_endpoint() {
   port="${!port_key:-}"
   if [ -n "$port" ]; then
     host="$(autodeploy_endpoint_host)"
-    log "$protocol 推送地址: ${scheme}://${username}@${host}:${port}${path}$suffix (外部入口配置: $port_key)"
+    log "$(autodeploy_msg '%s push address: %s://%s@%s:%s%s%s (external endpoint setting: %s)' "$protocol" "${scheme}" "${username}" "${host}" "${port}" "${path}" "$suffix" "$port_key")"
   elif [ "$inspected" = 1 ]; then
-    log "$protocol 未发布宿主机端口 (容器内监听 ${internal_port}；如经网关访问，请设置 $port_key)"
+    log "$(autodeploy_msg '%s has no published host port (container: %s; gateway port: %s)' "$protocol" "${internal_port}" "$port_key")"
   else
     host="$(autodeploy_endpoint_host)"
-    log "$protocol 推送地址模板: ${scheme}://${username}@${host}:<${protocol}_PORT>${path}$suffix"
-    log "  无法检测宿主机端口 (容器内监听 ${internal_port})，请设置 $port_key"
+    log "$(autodeploy_msg '%s push address template: %s://%s@%s:<%s_PORT>%s%s' "$protocol" "${scheme}" "${username}" "${host}" "${protocol}" "${path}" "$suffix")"
+    log "$(autodeploy_msg '  Cannot detect host port (container: %s); set %s' "${internal_port}" "$port_key")"
   fi
 }
 
@@ -78,11 +80,11 @@ autodeploy_log_endpoints() {
     fi
   fi
   output="$(
-    autodeploy_log_endpoint SSH 22 git "/~/${REPO_NAME}.git" "$bindings" "$inspected" " (部署分支: ${DEPLOY_BRANCH})"
+    autodeploy_log_endpoint SSH 22 git "/~/${REPO_NAME}.git" "$bindings" "$inspected" "$(autodeploy_msg ' (deployment branch: %s)' "${DEPLOY_BRANCH}")"
     autodeploy_log_endpoint HTTP 80 "$(autodeploy_http_user)" "/${REPO_NAME}.git" "$bindings" "$inspected"
   )"
   printf '%s\n' "$output"
   if [[ "$output" == *'<host>'* ]]; then
-    log '  <host> 请替换为客户端可访问的宿主机地址，或设置 AUTODEPLOY_HOST'
+    log "$(autodeploy_text '  Replace <host> with your server address, or set AUTODEPLOY_HOST')"
   fi
 }

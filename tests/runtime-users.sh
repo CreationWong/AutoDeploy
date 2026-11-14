@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-. "$root/scripts/autodeploy-runtime"
+. "$root/src/scripts/autodeploy-runtime"
 
 # Account metadata is the boundary: exercise aliases and supplementary groups,
 # not just a denylist of account names. No OS accounts or privileges are changed.

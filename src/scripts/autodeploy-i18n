@@ -1,0 +1,249 @@
+#!/bin/bash
+# 输出文案以英文为键，中文集中维护；未知语言或缺失翻译回退英文。
+autodeploy_text() {
+  local message="$1"
+  case "${AUTODEPLOY_LANG:-en}" in
+    zh|zh_CN|zh-CN|zh_CN.UTF-8|zh-cn)
+      case "$message" in
+        'AUTODEPLOY_LANG must be en or zh') message='AUTODEPLOY_LANG 必须是 en 或 zh' ;;
+        '[AutoDeploy] Warning: %s\n') message='[AutoDeploy] 警告: %s\n' ;;
+        'Loaded persistent settings: %s') message='已加载持久化设置: %s' ;;
+        'SSH push disabled: no public keys. Set AUTHORIZED_KEYS or mount %s/authorized_keys') message='SSH 未启用：缺少公钥。设置 AUTHORIZED_KEYS 或挂载 %s/authorized_keys' ;;
+        'Cannot initialize HTTP credentials: path is a symlink') message='无法初始化 HTTP 凭据：路径是符号链接' ;;
+        'HTTP password updated from AUTODEPLOY_HTTP_PASSWORD; user: %s') message='已使用 AUTODEPLOY_HTTP_PASSWORD 更新密码，用户: %s' ;;
+        'Generated a random HTTP push password; username: %s') message='HTTP 推送密码已随机生成，用户名: %s' ;;
+        'Read %s as root (passwords are not logged)') message='请以 root 读取 %s（密码不写入日志）' ;;
+        'Reusing HTTP credentials: %s (username: %s)') message='复用已有 HTTP 凭据文件: %s（用户名: %s）' ;;
+        '  To reset the password, delete this file and restart, or set AUTODEPLOY_HTTP_PASSWORD') message='  如需重置密码: 删除该文件后重启容器，或设置 AUTODEPLOY_HTTP_PASSWORD' ;;
+        'Created bare repository %s.git') message='已创建裸仓库 %s.git' ;;
+        'Interrupted deployment detected; restoring previous version: %s') message='检测到中断的部署，回退到上一版本: %s' ;;
+        'Failed to stop failed compose services') message='停止失败 compose 服务失败' ;;
+        'Startup snapshot missing; autostart disabled. Redeploy: %s') message='缺少启动快照，已禁用自动启动。请重新部署: %s' ;;
+        'Failed to restore previous compose version: %s') message='上一版本 compose 恢复失败: %s' ;;
+        'Deployment interrupted; no rollback version. Service disabled: %s') message='部署中断且无可回退版本，已停用服务: %s' ;;
+        'Failed to restore base environment; application may not start') message='基础环境恢复失败，应用可能无法启动' ;;
+        'Migrated application runtime identity: %s -> %s') message='已迁移业务运行身份: %s -> %s' ;;
+        'Unsafe runtime identity or file permissions; autostart disabled: %s') message='运行身份或文件权限不安全，已禁用自动启动: %s' ;;
+        'Startup complete; deployment requires %s') message='启动完成，扫描到配置 %s 才会部署' ;;
+        'AutoDeploy settings') message='AutoDeploy 设置' ;;
+        'Bare repository: %s') message='裸仓库: %s' ;;
+        '  Latest commit: %h %s (%an, %ad)') message='  最近提交: %h %s (%an, %ad)' ;;
+        '  (No commits yet)') message='  (暂无提交)' ;;
+        'Deployment status:') message='部署状态:' ;;
+        '    Failed commit: %.12s\n') message='    失败提交: %.12s\n' ;;
+        '    Marked as failed: %.12s (%s, rescued=%s) %s\n') message='    已标记失败: %.12s (%s, rescued=%s) %s\n' ;;
+        '  (No deployment records)') message='  (无部署记录)' ;;
+        'Bare repository does not exist: %s') message='裸仓库不存在: %s' ;;
+        '(No commit history)') message='(暂无提交记录)' ;;
+        'Unknown setting: %s. Run autodeploy help') message='未知设置: %s。请运行 autodeploy help' ;;
+        'Value must not be empty') message='值不能为空' ;;
+        'Saved %s=%s (deployment rules apply on next push)') message='已保存 %s=%s（部署规则在下次推送时生效）' ;;
+        'Usage: autodeploy deploy <branch|tag|commit>') message='用法: autodeploy deploy <branch|tag|commit>' ;;
+        'Application not found; usage: autodeploy logs <name> [N]') message='未找到应用，用法: autodeploy logs <name> [N]' ;;
+        'Log directory does not exist: %s') message='日志目录不存在: %s' ;;
+        '==> %s (last %s lines) <==') message='==> %s (最近 %s 行) <==' ;;
+        'No successful commit available to retry') message='没有可重试的成功提交' ;;
+        'Redeploying last successful commit: %s') message='重新部署上次成功提交: %s' ;;
+        'Usage: autodeploy set <KEY> <VALUE>') message='用法: autodeploy set <KEY> <VALUE>' ;;
+        'Unknown command: %s') message='未知命令: %s' ;;
+        '[AutoDeploy] Warning: %s') message='[AutoDeploy] 警告: %s' ;;
+        'Marked failed commit: %s (%s)') message='已标记失败提交: %s (%s)' ;;
+        'Warning: failed to write failed-commit marker') message='警告: 写入失败提交标记失败' ;;
+        'Warning: failed to write deployment status') message='警告: 写入部署状态失败' ;;
+        '[AutoDeploy] Error: %s') message='[AutoDeploy] 错误: %s' ;;
+        'Deployment aborted') message='部署中止' ;;
+        'Deployment aborted; failed to restore previous version') message='部署中止，未能恢复上一版本' ;;
+        'Invalid environment variable name: %s') message='非法环境变量名: %s' ;;
+        'Failed to parse YAML: %s') message='YAML 解析失败: %s' ;;
+        'env must be a key-value mapping') message='env 必须是键值映射' ;;
+        'build must be a boolean') message='build 必须是布尔值' ;;
+        '%s must be a list of command strings') message='%s 必须是命令字符串列表' ;;
+        'environment must be a mapping') message='environment 必须是映射' ;;
+        'healthcheck must be a mapping') message='healthcheck 必须是映射' ;;
+        'services must be a list') message='services 必须是列表' ;;
+        'deploy must be a mapping') message='deploy 必须是映射' ;;
+        'Base environment unchanged; skipping build') message='基础环境未变化，跳过构建' ;;
+        'Building base environment from %s') message='根据 %s 构建基础环境' ;;
+        'Installing system packages: %s') message='安装系统包: %s' ;;
+        'System package installation failed: %s') message='系统包安装失败: %s' ;;
+        'Running environment.setup: %s') message='执行 environment.setup: %s' ;;
+        'environment.setup failed: %s') message='environment.setup 执行失败: %s' ;;
+        'Base environment build complete') message='基础环境构建完成' ;;
+        'Usage: autodeploy-deploy --prepare-env <project-directory>\n') message='用法: autodeploy-deploy --prepare-env <项目目录>\n' ;;
+        'Refusing restore: project directory is outside the allowed root') message='拒绝恢复: 项目目录越界' ;;
+        '%s must not be a symlink') message='%s 不能是符号链接' ;;
+        '[AutoDeploy] Warning: invalid application name; skipping base environment restore: %s\n') message='[AutoDeploy] 警告: 应用名非法，跳过基础环境恢复: %s\n' ;;
+        'Executing .AutoDeploy/%s.sh') message='执行 .AutoDeploy/%s.sh' ;;
+        'Running .AutoDeploy/%s.sh') message='运行 .AutoDeploy/%s.sh' ;;
+        'No workflow files under .AutoDeploy/workflows') message='.AutoDeploy/workflows 下没有 workflow 文件' ;;
+        'Failed to parse workflow: %s') message='workflow 解析失败: %s' ;;
+        'Workflow %s has no jobs; skipping') message='workflow %s 没有 jobs，跳过' ;;
+        'Running workflow: %s') message='执行 workflow: %s' ;;
+        'Workflow %s job %s: unsupported %s') message='workflow %s job %s: 暂不支持 %s' ;;
+        'Warning: workflow %s job %s ignores needs; executing in file order') message='警告: workflow %s job %s 的 needs 被忽略，按文件顺序执行' ;;
+        'Workflow %s job %s has no steps; skipping') message='workflow %s job %s 没有 steps，跳过' ;;
+        'Workflow %s / job %s (%s steps)') message='workflow %s / job %s（%s 步）' ;;
+        'Step failed with continue-on-error=true; continuing: %s') message='步骤失败但 continue-on-error=true，继续: %s' ;;
+        'Workflow %s / %s / %s failed') message='workflow %s / %s / %s 执行失败' ;;
+        'Warning: ignoring invalid GITHUB_ENV variable name: %s') message='警告: 忽略非法 GITHUB_ENV 变量名: %s' ;;
+        'Stopped previous process service: %s') message='已停止旧的进程托管服务: %s' ;;
+        'Stopping previous compose project: %s') message='停止旧的 compose 项目: %s' ;;
+        'Warning: failed to stop previous compose project') message='警告: 停止旧 compose 项目失败' ;;
+        '%s failed: %s') message='%s 失败: %s' ;;
+        'Error: workdir must be inside the project directory: %s') message='错误: workdir 必须位于项目目录内: %s' ;;
+        'Error: workdir does not exist: %s') message='错误: workdir 不存在: %s' ;;
+        'Error: missing or privileged user: %s. Use a dedicated application user') message='错误: 用户不存在或权限过高: %s。请使用独立业务用户' ;;
+        'Error: type: process requires a start command') message='错误: type: process 必须提供 start 命令' ;;
+        'Running install command') message='执行 install 命令' ;;
+        'Running build command') message='执行 build 命令' ;;
+        'Error: failed to secure application deployment directory') message='错误: 无法保护业务部署目录' ;;
+        'Error: failed to secure application startup script or log paths') message='错误: 无法保护业务启动脚本或日志路径' ;;
+        'Error: process did not start: %s\n%s') message='错误: 进程未成功运行: %s
+%s' ;;
+        'Process managed: %s (user=%s)') message='进程已托管: %s (user=%s)' ;;
+        'Error: compose file not found (specify it with file)') message='错误: 未找到 compose 文件（可通过 file 指定）' ;;
+        'Error: compose file must be inside the project directory: %s') message='错误: compose 文件必须位于项目目录内: %s' ;;
+        'Error: docker CLI unavailable; build with INSTALL_DOCKER_CLI=1 and mount /var/run/docker.sock') message='错误: docker CLI 不可用，请以 INSTALL_DOCKER_CLI=1 构建镜像并挂载 /var/run/docker.sock' ;;
+        'Starting docker compose services (project=%s)') message='启动 docker compose 服务 (project=%s)' ;;
+        'Error: docker compose startup failed') message='错误: docker compose 启动失败' ;;
+        'Error: healthcheck requires url or port') message='错误: healthcheck 需要 url 或 port' ;;
+        'Error: healthcheck.timeout must be an integer') message='错误: healthcheck.timeout 必须是整数' ;;
+        'Waiting for health check: %s (up to %ss)') message='等待健康检查: %s (最长 %ss)' ;;
+        'Health check passed') message='健康检查通过' ;;
+        'Error: health check failed: %s') message='错误: 健康检查失败: %s' ;;
+        'Process startup failed') message='进程启动失败' ;;
+        'Compose startup failed') message='compose 启动失败' ;;
+        'Unsupported type: %s (available: process / docker-compose)') message='不支持的 type: %s（可选 process / docker-compose）' ;;
+        '[AutoDeploy] Error: must run as root (post-receive invokes via sudo)\n') message='[AutoDeploy] 错误: 必须以 root 运行（post-receive 通过 sudo 调用）\n' ;;
+        'Usage: autodeploy-deploy <project-directory> [commit] [branch]\n') message='用法: autodeploy-deploy <项目目录> [commit] [branch]\n' ;;
+        'Refusing deployment: directory must be under %s') message='拒绝部署: 目录必须位于 %s 下' ;;
+        'Refusing deployment: resolved directory must be under %s') message='拒绝部署: 实际目录必须位于 %s 下' ;;
+        'Timed out waiting for repository deployment lock: %s') message='等待仓库部署锁超时: %s' ;;
+        'Invalid commit ID') message='非法提交 ID' ;;
+        '%s not found; skipping deployment') message='未找到 %s，跳过部署' ;;
+        'yq missing; rebuild with the project Dockerfile') message='缺少 yq，请用项目 Dockerfile 重建镜像' ;;
+        'Unsupported version: %s (currently only 1 is supported)') message='不支持的 version: %s（当前仅支持 1）' ;;
+        'name must start with a letter or digit and contain only letters, digits, underscores, dots and hyphens: %s') message='name 只能包含字母、数字、下划线、点和连字符，且以字母或数字开头: %s' ;;
+        'Deploying project: %s (type=%s, commit=%s, branch=%s)') message='部署项目: %s (type=%s, commit=%s, branch=%s)' ;;
+        '.AutoDeploy/before.sh failed; deployment aborted') message='.AutoDeploy/before.sh 执行失败，已中止部署' ;;
+        'Health check did not pass') message='健康检查未通过' ;;
+        '.AutoDeploy/after.sh failed') message='.AutoDeploy/after.sh 执行失败' ;;
+        'Deployment failed: %s') message='部署失败: %s' ;;
+        'Deployment stopped without rollback; current commit marked as failed') message='已停止部署，未回退；当前提交已标记为失败' ;;
+        'Deployment complete: %s (%s)') message='部署完成: %s (%s)' ;;
+        'Previous directory missing: %s. Cannot roll back') message='缺少上一版本目录: %s。无法回退' ;;
+        'Recorded last successful version: %s') message='已记录上一可用版本: %s' ;;
+        'Rolled back to last successful version: %s') message='已回退到上一可用版本: %s' ;;
+        'Warning: rollback to previous version failed') message='警告: 回退到上一版本失败' ;;
+        'Deployment failed; rolling back to: %s') message='部署失败，正在回退到: %s' ;;
+        'Warning: rollback environment restore failed; trying to start') message='警告: 回退环境恢复失败，继续尝试启动' ;;
+        'Rolled back to %s') message='已回退到 %s' ;;
+        'Rollback complete; running version: %s') message='回退完成，当前版本: %s' ;;
+        'Warning: rollback failed to start or pass health check; service may be down') message='警告: 回退版本启动或健康检查失败，服务可能不可用' ;;
+        'No previous version available; stopping deployment') message='没有可用的上一版本，停止部署' ;;
+        'Removed failed deployment directory: %s') message='已移除失败的部署目录: %s' ;;
+        '[AutoDeploy] Error: REPO_NAME must start with a letter or digit and contain only letters, digits, underscores, dots and hyphens\n') message='[AutoDeploy] 错误: REPO_NAME 必须以字母或数字开头，且仅包含字母、数字、下划线、点和连字符\n' ;;
+        '[AutoDeploy] Error: AUTODEPLOY_CONFIG_NAME must be a plain filename in the project root\n') message='[AutoDeploy] 错误: AUTODEPLOY_CONFIG_NAME 必须是项目根目录下的普通文件名\n' ;;
+        '[AutoDeploy] Error: DEPLOY_TAG_MODE must be commit or branch\n') message='[AutoDeploy] 错误: DEPLOY_TAG_MODE 只能是 commit 或 branch\n' ;;
+        '%s push address: %s%s') message='%s 推送地址: %s%s' ;;
+        '%s push address: %s://%s@%s:%s%s%s (external endpoint setting: %s)') message='%s 推送地址: %s://%s@%s:%s%s%s (外部入口配置: %s)' ;;
+        '%s has no published host port (container: %s; gateway port: %s)') message='%s 未发布宿主机端口（容器: %s；网关端口设置: %s）' ;;
+        '%s push address template: %s://%s@%s:<%s_PORT>%s%s') message='%s 推送地址模板: %s://%s@%s:<%s_PORT>%s%s' ;;
+        '  Cannot detect host port (container: %s); set %s') message='  无法检测宿主机端口（容器: %s），请设置 %s' ;;
+        '  Replace <host> with your server address, or set AUTODEPLOY_HOST') message='  将 <host> 替换为服务器地址，或设置 AUTODEPLOY_HOST' ;;
+        ' (deployment branch: %s)') message=' (部署分支: %s)' ;;
+        'Workflow %s / %s / %s: skipping %s (code already checked out)') message='workflow %s / %s / %s: 跳过 %s（代码已检出）' ;;
+        'Workflow %s / %s / %s: unsupported uses: %s (only actions/checkout is supported)') message='workflow %s / %s / %s: 不支持 uses: %s（仅支持 actions/checkout）' ;;
+        'Workflow %s / %s / %s: step is missing run') message='workflow %s / %s / %s: 步骤缺少 run' ;;
+        'Warning: workflow %s / %s / %s ignores if (runs after previous step succeeds)') message='警告: workflow %s / %s / %s 的 if 条件被忽略（按上一步成功后执行）' ;;
+        'Workflow %s / %s / %s: unsupported shell: %s (only bash/sh supported)') message='workflow %s / %s / %s: 不支持的 shell: %s（仅支持 bash/sh）' ;;
+        'Workflow %s / %s / %s: working-directory must be inside the project: %s') message='workflow %s / %s / %s: working-directory 必须位于项目目录内: %s' ;;
+        'Workflow %s / %s / %s: working-directory does not exist: %s') message='workflow %s / %s / %s: working-directory 不存在: %s' ;;
+        'Usage: autodeploy-post-receive --ref <branch/tag/commit>') message='用法: autodeploy-post-receive --ref <branch/tag/commit>' ;;
+        'Error: cannot resolve ref: %s') message='错误: 无法解析 ref: %s' ;;
+        'Manually deploying ref: %s') message='手动部署 ref: %s' ;;
+        'Ref %s deleted; skipping deployment') message='引用 %s 已删除，跳过部署' ;;
+        'Skipping branch %s; already deploying %s') message='跳过分支 %s，本次只部署 %s' ;;
+        'Branch %s is not in deployment list (%s); skipping') message='分支 %s 不在部署列表 (%s) 中，跳过' ;;
+        'Tag %s cannot be resolved to a commit; skipping') message='标签 %s 无法解析为提交，跳过' ;;
+        'Tag %s is not in deployment list (%s); skipping') message='标签 %s 不在部署列表 (%s) 中，跳过' ;;
+        'Skipping tag %s; already deploying %s') message='跳过标签 %s，本次只部署 %s' ;;
+        'Tag %s has no matching branch (%s); skipping') message='标签 %s 未找到匹配分支 (%s)，跳过' ;;
+        'Tag %s matched; deploying latest commit on branch %s') message='标签 %s 命中，部署其所在分支 %s 最新提交' ;;
+        'Tag %s matched; deploying tagged commit') message='标签 %s 命中，部署该标签提交' ;;
+        'No refs to deploy; exiting') message='本次没有需要部署的引用，退出' ;;
+        'Processing %s (%s)') message='开始处理 %s (%s)' ;;
+        '%s not found in project root; skipping deployment') message='未在项目根目录找到 %s，跳过部署' ;;
+        'Error: %s must be a regular file, not a symlink or directory') message='错误: %s 必须是普通文件，不能是符号链接或目录' ;;
+        'Error: failed to export source') message='错误: 导出代码失败' ;;
+        'Found %s; starting deployment') message='找到 %s，开始部署' ;;
+        'AutoDeploy management commands
+
+Usage: autodeploy <command> [arguments]
+
+  show                      Show settings, latest commit and status
+  set <KEY> <VALUE>         Save a setting (survives restarts)
+  deploy <branch|tag|commit> Deploy a branch, tag or commit
+  retry                     Redeploy the last successful commit
+  logs [name] [N]           Show logs (default: first app, 50 lines)
+  log [N]                   Show commit history (last 10 commits)
+  license                   Show the GNU GPL version 3 license
+  help                      Show this help
+
+Available settings:
+  REPO_NAME                 Repository/default app name (default: app)
+  DEPLOY_BRANCH             Comma-separated branch patterns (default main)
+  DEPLOY_TAG                Comma-separated tag patterns (empty disables tags)
+  DEPLOY_TAG_MODE           commit=tagged commit / branch=latest branch commit
+  AUTODEPLOY_CONFIG_NAME    Configuration filename (default AutoDeploy.config.yaml)
+  AUTODEPLOY_LANG           Output language: en (default) or zh
+
+Project deploy rules override these defaults.
+Deployment rules apply on next push. REPO_NAME does not rename existing repositories.
+
+Copyright (C) 2026 CreationWong
+License: GNU GPL version 3 (GPL-3.0-only). This program comes with no warranty.
+Modification and redistribution are permitted under the license; run autodeploy license.') message='AutoDeploy 管理命令
+
+用法: autodeploy <命令> [参数]
+
+  show                      查看设置、最近提交和部署状态
+  set <KEY> <VALUE>         保存设置，重启后保留
+  deploy <branch|tag|commit> 部署指定分支、标签或提交
+  retry                     重新部署上次成功提交
+  logs [name] [N]           查看日志（默认首个应用、50 行）
+  log [N]                   查看提交历史（默认 10 条）
+  license                   查看 GNU GPL 第 3 版许可全文
+  help                      显示本帮助
+
+可修改的 KEY:
+  AUTODEPLOY_LANG           输出语言：en（默认英文）或 zh（中文）
+  REPO_NAME                 裸仓库/默认应用名（默认 app）
+  DEPLOY_BRANCH             部署分支，逗号分隔、支持 *（默认 main）
+  DEPLOY_TAG                部署标签，逗号分隔、支持 *（默认不启用）
+  DEPLOY_TAG_MODE           commit=标签提交；branch=所在分支最新提交（默认 commit）
+  AUTODEPLOY_CONFIG_NAME    部署配置文件名（默认 AutoDeploy.config.yaml）
+
+项目 deploy 规则优先于这些默认值，部署规则在下次推送时生效。
+修改 REPO_NAME 不会重命名已有仓库。
+
+Copyright (C) 2026 CreationWong
+许可: GNU GPL 第 3 版 (GPL-3.0-only)。本程序不提供任何担保。
+可按许可条款修改和再分发；运行 autodeploy license 查看全文。' ;;
+        'Deployment interrupted; previous configuration restored. Check service status') message='部署中断，已恢复旧配置。请检查服务状态' ;;
+        'First deployment interrupted; service disabled. Redeploy') message='首次部署中断，已停用服务。请重新部署' ;;
+        disabled) message='未启用' ;;
+        'Deployment failed') message='部署失败' ;;
+      esac
+      ;;
+  esac
+  printf '%s' "$message"
+}
+
+autodeploy_msg() {
+  local format
+  format="$(autodeploy_text "$1")"
+  shift
+  # 格式仅来自源码与受信任的词典，动态数据始终作为参数传入。
+  printf "$format" "$@"
+}

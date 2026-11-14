@@ -1,14 +1,14 @@
 # 应用示例
 
-第一次部署建议使用[新手教程](getting-started.md)中的静态页面。下面展示已有项目如何接入 AutoDeploy。
+已有项目可参考以下示例。首次体验见[新手教程](getting-started.md)。
 
 ## Hexo 部署示例
 
 先按[部署指南](deployment.md#启用-docker-compose-业务部署)启用 Docker CLI 和宿主机 socket；AutoDeploy 还需配置 `host.docker.internal:host-gateway`，以便访问示例发布的业务端口。
 
-Hexo 推荐使用 `docker-compose` 类型：Node 镜像负责生成静态页面，最终镜像只保留 Nginx 和生成后的 `public/`。AutoDeploy 容器本身不需要安装 Node。
+Hexo 使用 `docker-compose` 部署：Node 镜像构建页面，Nginx 镜像提供访问。AutoDeploy 无需安装 Node。
 
-确保 Hexo 项目的 `package.json` 有构建脚本，并提交 `package-lock.json`：
+在 `package.json` 中添加构建脚本，并提交 `package-lock.json`：
 
 ```json
 {

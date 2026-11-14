@@ -21,7 +21,7 @@ def run(*args: str, cwd: Path = ROOT, **kwargs) -> subprocess.CompletedProcess:
 
 
 def lint() -> None:
-    scripts = [ROOT / "entrypoint.sh", *sorted((ROOT / "scripts").iterdir())]
+    scripts = [ROOT / "src/entrypoint.sh", *sorted((ROOT / "src/scripts").iterdir())]
     scripts += sorted((ROOT / "examples/sample-app/.AutoDeploy").glob("*.sh"))
     scripts += sorted((ROOT / "tests").glob("*.sh"))
     for script in scripts:
@@ -67,7 +67,7 @@ def containers(image: str, build: bool, platform: str | None, docker_cli: str) -
     env = os.environ.copy()
     if platform:
         env["DOCKER_DEFAULT_PLATFORM"] = platform
-    for script in ("runtime-security.sh", "deployment-preflight.sh"):
+    for script in ("runtime-security.sh", "deployment-preflight.sh", "container-i18n.sh"):
         run("bash", str(ROOT / "tests" / script), image, env=env)
     if docker_cli == "0":
         run("docker", "pull", "nginx:1.27-alpine", env=env)

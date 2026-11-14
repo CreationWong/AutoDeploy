@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-# shellcheck source=scripts/autodeploy-runtime
+# shellcheck source=src/scripts/autodeploy-runtime
 . /usr/local/bin/autodeploy-runtime
 
 HOOK_ENV="/etc/autodeploy/env"
@@ -85,7 +85,7 @@ if [ "${1:-}" = "--ref" ] || [ "${1:-}" = "-r" ]; then
   shift
   manual_ref="${1:-}"
   if [ -z "$manual_ref" ]; then
-    echo "用法: autodeploy-post-receive --ref <branch|tag|commit>" >&2
+    echo "$(autodeploy_text 'Usage: autodeploy-post-receive --ref <branch/tag/commit>')" >&2
     exit 1
   fi
   export GIT_DIR="${GIT_DIR:-$DATA_DIR/git-home/${REPO_NAME}.git}"
@@ -99,16 +99,16 @@ if [ "${1:-}" = "--ref" ] || [ "${1:-}" = "-r" ]; then
     deploy_ref="$(git rev-parse "$manual_ref^{commit}")"
     deploy_branch="$manual_ref"
   else
-    log "错误: 无法解析 ref: $manual_ref"
+    log "$(autodeploy_msg 'Error: cannot resolve ref: %s' "$manual_ref")"
     exit 1
   fi
-  log "手动部署 ref: $manual_ref"
+  log "$(autodeploy_msg 'Manually deploying ref: %s' "$manual_ref")"
 else
   while read -r _oldrev newrev ref; do
     [ -z "${ref:-}" ] && continue
     if [ "$newrev" = "0000000000000000000000000000000000000000" ]; then
       case "$ref" in
-        refs/heads/*|refs/tags/*) log "引用 ${ref} 已删除，跳过部署" ;;
+        refs/heads/*|refs/tags/*) log "$(autodeploy_msg 'Ref %s deleted; skipping deployment' "${ref}")" ;;
       esac
       continue
     fi
@@ -118,29 +118,29 @@ else
         branches="$(read_trigger "$newrev" branches "$DEPLOY_BRANCH")"
         if pattern_matches "$branches" "$branch"; then
           if [ -n "$deploy_ref" ]; then
-            log "分支 $branch 也匹配部署列表，本次仅部署 $deploy_branch，跳过"
+            log "$(autodeploy_msg 'Skipping branch %s; already deploying %s' "$branch" "$deploy_branch")"
             continue
           fi
           deploy_ref="$newrev"
           deploy_branch="$branch"
         else
-          log "分支 $branch 不在部署列表 ($branches) 中，跳过"
+          log "$(autodeploy_msg 'Branch %s is not in deployment list (%s); skipping' "$branch" "$branches")"
         fi
         ;;
       refs/tags/*)
         tag="${ref#refs/tags/}"
         tag_commit="$(git rev-parse "$ref^{commit}" 2>/dev/null || true)"
         if [ -z "$tag_commit" ]; then
-          log "标签 $tag 无法解析为提交，跳过"
+          log "$(autodeploy_msg 'Tag %s cannot be resolved to a commit; skipping' "$tag")"
           continue
         fi
         tags="$(read_trigger "$tag_commit" tags "$DEPLOY_TAG")"
         if ! pattern_matches "$tags" "$tag"; then
-          log "标签 $tag 不在部署列表 (${tags:-未启用}) 中，跳过"
+          log "$(autodeploy_msg 'Tag %s is not in deployment list (%s); skipping' "$tag" "${tags:-$(autodeploy_text disabled)}")"
           continue
         fi
         if [ -n "$deploy_ref" ]; then
-          log "标签 $tag 也匹配部署列表，本次仅部署 $deploy_branch，跳过"
+          log "$(autodeploy_msg 'Skipping tag %s; already deploying %s' "$tag" "$deploy_branch")"
           continue
         fi
         tag_mode="$(read_trigger "$tag_commit" tag_mode "$DEPLOY_TAG_MODE")"
@@ -149,16 +149,16 @@ else
           branches="$(read_trigger "$tag_commit" branches "$DEPLOY_BRANCH")"
           tag_branch="$(find_branch_for_commit "$branches" "$tag_commit" || true)"
           if [ -z "$tag_branch" ]; then
-            log "标签 $tag 未找到匹配分支 ($branches)，跳过"
+            log "$(autodeploy_msg 'Tag %s has no matching branch (%s); skipping' "$tag" "$branches")"
             continue
           fi
           deploy_ref="$(git rev-parse "refs/heads/$tag_branch")"
           deploy_branch="$tag_branch"
-          log "标签 $tag 命中，部署其所在分支 $tag_branch 最新提交"
+          log "$(autodeploy_msg 'Tag %s matched; deploying latest commit on branch %s' "$tag" "$tag_branch")"
         else
           deploy_ref="$tag_commit"
           deploy_branch="$tag"
-          log "标签 $tag 命中，部署该标签提交"
+          log "$(autodeploy_msg 'Tag %s matched; deploying tagged commit' "$tag")"
         fi
         ;;
       *) continue ;;
@@ -167,18 +167,18 @@ else
 fi
 
 if [ -z "$deploy_ref" ]; then
-  log "本次没有需要部署的引用，退出"
+  log "$(autodeploy_text 'No refs to deploy; exiting')"
   exit 0
 fi
 
-log "开始处理 $deploy_branch ($deploy_ref)"
+log "$(autodeploy_msg 'Processing %s (%s)' "$deploy_branch" "$deploy_ref")"
 # Inspect the tree before exporting: Git-only repositories need no working copy.
 # A configuration symlink must never make the root deployer read outside the tree.
 config_mode="$(git ls-tree "$deploy_ref" -- "$CONFIG_NAME" | cut -d ' ' -f1)"
 case "$config_mode" in
-  '') log "未在项目根目录找到 $CONFIG_NAME，跳过部署"; exit 0 ;;
+  '') log "$(autodeploy_msg '%s not found in project root; skipping deployment' "$CONFIG_NAME")"; exit 0 ;;
   100644|100755) ;;
-  *) log "错误: $CONFIG_NAME 必须是普通文件，不能是符号链接或目录"; exit 1 ;;
+  *) log "$(autodeploy_msg 'Error: %s must be a regular file, not a symlink or directory' "$CONFIG_NAME")"; exit 1 ;;
 esac
 mkdir -p "$DEPLOY_ROOT"
 VERSIONS_ROOT="$DEPLOY_ROOT/.versions/$REPO_NAME"
@@ -187,16 +187,16 @@ staging="$(mktemp -d "$VERSIONS_ROOT/.staging-XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
 
 if ! git archive "$deploy_ref" | tar -x -C "$staging"; then
-  log "错误: 导出代码失败"
+  log "$(autodeploy_text 'Error: failed to export source')"
   exit 1
 fi
 
 if [ ! -f "$staging/$CONFIG_NAME" ]; then
-  log "未在项目根目录找到 $CONFIG_NAME，跳过部署"
+  log "$(autodeploy_msg '%s not found in project root; skipping deployment' "$CONFIG_NAME")"
   exit 0
 fi
 
-log "找到 $CONFIG_NAME，开始部署"
+log "$(autodeploy_msg 'Found %s; starting deployment' "$CONFIG_NAME")"
 # 等待部署锁期间保持 staging 名称，避免被历史版本清理误删。
 vdir="$staging"
 trap - EXIT

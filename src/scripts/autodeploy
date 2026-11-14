@@ -24,9 +24,9 @@ SETTINGS_FILE="$DATA_DIR/settings.env"
 GIT_HOME="$DATA_DIR/git-home"
 
 log() { printf '[AutoDeploy] %s\n' "$*"; }
-# shellcheck source=scripts/autodeploy-endpoints
+# shellcheck source=src/scripts/autodeploy-endpoints
 . /usr/local/bin/autodeploy-endpoints
-# shellcheck source=scripts/autodeploy-runtime
+# shellcheck source=src/scripts/autodeploy-runtime
 . /usr/local/bin/autodeploy-runtime
 
 load_settings() {
@@ -40,6 +40,7 @@ load_settings() {
     . "$SETTINGS_FILE"
     set +a
   fi
+  [ -z "${requested_language:-}" ] || AUTODEPLOY_LANG="$requested_language"
   REPO_NAME="${REPO_NAME:-app}"
   DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
   DEPLOY_TAG="${DEPLOY_TAG:-}"
@@ -57,6 +58,7 @@ write_env_file() {
     printf 'DEPLOY_TAG=%q\n' "$DEPLOY_TAG"
     printf 'DEPLOY_TAG_MODE=%q\n' "$DEPLOY_TAG_MODE"
     printf 'AUTODEPLOY_CONFIG_NAME=%q\n' "$AUTODEPLOY_CONFIG_NAME"
+    printf 'AUTODEPLOY_LANG=%q\n' "${AUTODEPLOY_LANG:-en}"
     printf 'AUTODEPLOY_APP_USER=%q\n' "${AUTODEPLOY_APP_USER:-autodeploy-app}"
   } > "$tmp"
   chown root:git "$tmp" 2>/dev/null || true
@@ -66,10 +68,11 @@ write_env_file() {
 
 cmd_show() {
   load_settings
-  echo "AutoDeploy 设置"
+  echo "$(autodeploy_text 'AutoDeploy settings')"
+  printf '  AUTODEPLOY_LANG        = %s\n' "${AUTODEPLOY_LANG:-en}"
   printf '  REPO_NAME              = %s\n' "$REPO_NAME"
   printf '  DEPLOY_BRANCH          = %s\n' "$DEPLOY_BRANCH"
-  printf '  DEPLOY_TAG             = %s\n' "${DEPLOY_TAG:-<未启用>}"
+  printf '  DEPLOY_TAG             = %s\n' "${DEPLOY_TAG:-<$(autodeploy_text disabled)>}"
   printf '  DEPLOY_TAG_MODE        = %s\n' "$DEPLOY_TAG_MODE"
   printf '  AUTODEPLOY_CONFIG_NAME = %s\n' "$AUTODEPLOY_CONFIG_NAME"
   printf '  HTTP_USER              = %s\n' "$(autodeploy_http_user)"
@@ -77,16 +80,16 @@ cmd_show() {
   echo
 
   local repo_dir="$GIT_HOME/${REPO_NAME}.git"
-  echo "裸仓库: $repo_dir"
+  echo "$(autodeploy_msg 'Bare repository: %s' "$repo_dir")"
   if [ -d "$repo_dir" ] && git --git-dir="$repo_dir" rev-parse --verify -q HEAD >/dev/null 2>&1; then
     git --git-dir="$repo_dir" log -1 --date=short \
-      --format='  最近提交: %h %s (%an, %ad)'
+      --format="$(autodeploy_text '  Latest commit: %h %s (%an, %ad)')"
   else
-    echo "  (暂无提交)"
+    echo "$(autodeploy_text '  (No commits yet)')"
   fi
   echo
 
-  echo "部署状态:"
+  echo "$(autodeploy_text 'Deployment status:')"
   local f found=0 n t s c b u fc d
   for f in "$DATA_DIR"/state/*/deploy.json; do
     [ -f "$f" ] || continue
@@ -99,15 +102,15 @@ cmd_show() {
     u="$(yq -r '.updated_at // ""' "$f")"
     fc="$(yq -r '.failed_commit // ""' "$f")"
     printf '  %s (type=%s) status=%s branch=%s commit=%.12s at %s\n' "$n" "$t" "$s" "$b" "$c" "$u"
-    [ -n "$fc" ] && printf '    失败提交: %.12s\n' "$fc"
+    [ -n "$fc" ] && printf "$(autodeploy_text '    Failed commit: %.12s\n')" "$fc"
     d="$DATA_DIR/state/$n/failed.json"
     if [ -f "$d" ]; then
-      printf '    已标记失败: %.12s (%s, rescued=%s) %s\n' \
+      printf "$(autodeploy_text '    Marked as failed: %.12s (%s, rescued=%s) %s\n')" \
         "$(yq -r '.commit // ""' "$d")" "$(yq -r '.branch // ""' "$d")" \
         "$(yq -r '.rescued // false' "$d")" "$(yq -r '.message // ""' "$d")"
     fi
   done
-  [ "$found" = "1" ] || echo "  (无部署记录)"
+  [ "$found" = "1" ] || echo "$(autodeploy_text '  (No deployment records)')"
 }
 
 cmd_log() {
@@ -116,11 +119,11 @@ cmd_log() {
   case "$n" in ''|*[!0-9]*) n=10 ;; esac
   local repo_dir="$GIT_HOME/${REPO_NAME}.git"
   if [ ! -d "$repo_dir" ]; then
-    echo "裸仓库不存在: $repo_dir" >&2
+    echo "$(autodeploy_msg 'Bare repository does not exist: %s' "$repo_dir")" >&2
     return 1
   fi
   if ! git --git-dir="$repo_dir" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-    echo "(暂无提交记录)"
+    echo "$(autodeploy_text '(No commit history)')"
     return 0
   fi
   git --git-dir="$repo_dir" log -n "$n" --all --decorate --date=short \
@@ -133,18 +136,21 @@ cmd_set() {
   key="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
   case "$key" in
     CONFIG_NAME|AUTODEPLOY_CONFIG_NAME) key=AUTODEPLOY_CONFIG_NAME ;;
-    REPO_NAME|DEPLOY_BRANCH|DEPLOY_TAG|DEPLOY_TAG_MODE) ;;
+    REPO_NAME|DEPLOY_BRANCH|DEPLOY_TAG|DEPLOY_TAG_MODE|AUTODEPLOY_LANG) ;;
     *)
-      echo "不支持修改的键: $1（可选: REPO_NAME, DEPLOY_BRANCH, DEPLOY_TAG, DEPLOY_TAG_MODE, AUTODEPLOY_CONFIG_NAME）" >&2
+      echo "$(autodeploy_msg 'Unknown setting: %s. Run autodeploy help' "$1")" >&2
       return 1
       ;;
   esac
   if [ -z "$value" ] && [ "$key" != "DEPLOY_TAG" ]; then
-    echo "值不能为空" >&2
+    echo "$(autodeploy_text 'Value must not be empty')" >&2
     return 1
   fi
 
   case "$key" in
+    AUTODEPLOY_LANG)
+      case "$value" in en|zh) ;; *) echo "$(autodeploy_text 'AUTODEPLOY_LANG must be en or zh')" >&2; return 1 ;; esac
+      ;;
     REPO_NAME)
       autodeploy_validate_settings "$value" "$AUTODEPLOY_CONFIG_NAME" "$DEPLOY_TAG_MODE" || return 1
       ;;
@@ -166,6 +172,7 @@ cmd_set() {
   mv "$tmp" "$SETTINGS_FILE"
 
   case "$key" in
+    AUTODEPLOY_LANG) AUTODEPLOY_LANG="$value" ;;
     REPO_NAME) REPO_NAME="$value" ;;
     DEPLOY_BRANCH) DEPLOY_BRANCH="$value" ;;
     DEPLOY_TAG) DEPLOY_TAG="$value" ;;
@@ -173,19 +180,19 @@ cmd_set() {
     AUTODEPLOY_CONFIG_NAME) AUTODEPLOY_CONFIG_NAME="$value" ;;
   esac
   write_env_file
-  log "已更新 $key=$value（下一次推送生效，重启后保留）"
+  log "$(autodeploy_msg 'Saved %s=%s (deployment rules apply on next push)' "$key" "$value")"
 }
 
 cmd_deploy() {
   load_settings
   local ref="${1:-}"
   if [ -z "$ref" ]; then
-    echo "用法: autodeploy deploy <branch|tag|commit>" >&2
+    echo "$(autodeploy_text 'Usage: autodeploy deploy <branch|tag|commit>')" >&2
     return 1
   fi
   local repo_dir="$GIT_HOME/${REPO_NAME}.git"
   if [ ! -d "$repo_dir" ]; then
-    echo "裸仓库不存在: $repo_dir" >&2
+    echo "$(autodeploy_msg 'Bare repository does not exist: %s' "$repo_dir")" >&2
     return 1
   fi
   GIT_DIR="$repo_dir" /usr/local/bin/autodeploy-post-receive --ref "$ref"
@@ -203,17 +210,17 @@ cmd_logs() {
     done
   fi
   if [ -z "$name" ]; then
-    echo "未找到应用，用法: autodeploy logs <name> [N]" >&2
+    echo "$(autodeploy_text 'Application not found; usage: autodeploy logs <name> [N]')" >&2
     return 1
   fi
   local dir="$DATA_DIR/logs/$name"
   if [ ! -d "$dir" ]; then
-    echo "日志目录不存在: $dir" >&2
+    echo "$(autodeploy_msg 'Log directory does not exist: %s' "$dir")" >&2
     return 1
   fi
   for f in "$dir"/*.log; do
     [ -f "$f" ] || continue
-    echo "==> $f (最近 $n 行) <=="
+    echo "$(autodeploy_msg '==> %s (last %s lines) <==' "$f" "$n")"
     tail -n "$n" "$f"
   done
 }
@@ -229,43 +236,46 @@ cmd_retry() {
     fi
   done
   if [ -z "$commit" ]; then
-    echo "没有可重试的成功提交" >&2
+    echo "$(autodeploy_text 'No successful commit available to retry')" >&2
     return 1
   fi
-  echo "重新部署上次成功提交: ${commit:0:12}"
+  echo "$(autodeploy_msg 'Redeploying last successful commit: %s' "${commit:0:12}")"
   cmd_deploy "$commit"
 }
 
 cmd_help() {
-  cat <<'EOF'
-AutoDeploy 管理命令
+  printf '%s\n' "$(autodeploy_text 'AutoDeploy management commands
 
-用法: autodeploy <命令> [参数]
+Usage: autodeploy <command> [arguments]
 
-  show                      查看当前设置、裸仓库最近提交与部署状态
-  set <KEY> <VALUE>         修改设置（写入 /data/settings.env，重启后保留）
-  deploy <branch|tag|commit> 手动部署指定 ref（可用于回滚）
-  retry                     重新部署上次成功提交
-  logs [name] [N]           查看应用日志（默认第一个应用，最近 50 行）
-  log [N]                   查看当前项目提交历史（默认最近 10 条）
-  license                   查看 GNU GPL 第 3 版许可全文
-  help                      显示本帮助
+  show                      Show settings, latest commit and status
+  set <KEY> <VALUE>         Save a setting (survives restarts)
+  deploy <branch|tag|commit> Deploy a branch, tag or commit
+  retry                     Redeploy the last successful commit
+  logs [name] [N]           Show logs (default: first app, 50 lines)
+  log [N]                   Show commit history (last 10 commits)
+  license                   Show the GNU GPL version 3 license
+  help                      Show this help
 
-可修改的 KEY:
-  REPO_NAME                 裸仓库/默认应用名（默认 app）
-  DEPLOY_BRANCH             默认触发部署的分支，逗号分隔、支持 * 通配（默认 main）
-  DEPLOY_TAG                默认触发部署的标签，逗号分隔、支持 * 通配（默认空=不启用）
-  DEPLOY_TAG_MODE           标签命中后的行为：commit=部署标签提交 / branch=部署标签所在分支最新提交（默认 commit）
-  AUTODEPLOY_CONFIG_NAME    部署配置文件名（默认 AutoDeploy.config.yaml）
+Available settings:
+  REPO_NAME                 Repository/default app name (default: app)
+  DEPLOY_BRANCH             Comma-separated branch patterns (default main)
+  DEPLOY_TAG                Comma-separated tag patterns (empty disables tags)
+  DEPLOY_TAG_MODE           commit=tagged commit / branch=latest branch commit
+  AUTODEPLOY_CONFIG_NAME    Configuration filename (default AutoDeploy.config.yaml)
+  AUTODEPLOY_LANG           Output language: en (default) or zh
 
-说明: 上述触发规则可在项目 AutoDeploy.config.yaml 的 deploy 段按项目覆盖；
-      修改对下一次 git push 生效；REPO_NAME 不会重命名已存在的裸仓库。
+Project deploy rules override these defaults.
+Deployment rules apply on next push. REPO_NAME does not rename existing repositories.
 
 Copyright (C) 2026 CreationWong
-许可: GNU GPL 第 3 版 (GPL-3.0-only)。本程序不提供任何担保。
-可按许可条款修改和再分发；运行 autodeploy license 查看全文。
-EOF
+License: GNU GPL version 3 (GPL-3.0-only). This program comes with no warranty.
+Modification and redistribution are permitted under the license; run autodeploy license.')"
 }
+
+requested_language="${AUTODEPLOY_LANG-}"
+load_settings
+[ -z "$requested_language" ] || AUTODEPLOY_LANG="$requested_language"
 
 case "${1:-help}" in
   show|status) cmd_show ;;
@@ -277,7 +287,7 @@ case "${1:-help}" in
   set)
     shift
     if [ "$#" -lt 2 ]; then
-      echo "用法: autodeploy set <KEY> <VALUE>" >&2
+      echo "$(autodeploy_text 'Usage: autodeploy set <KEY> <VALUE>')" >&2
       exit 1
     fi
     cmd_set "$1" "$2"
@@ -293,7 +303,7 @@ case "${1:-help}" in
     ;;
   help|-h|--help|"") cmd_help ;;
   *)
-    echo "未知命令: $1" >&2
+    echo "$(autodeploy_msg 'Unknown command: %s' "$1")" >&2
     cmd_help
     exit 1
     ;;

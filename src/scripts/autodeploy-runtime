@@ -1,18 +1,20 @@
 #!/bin/bash
+# shellcheck source=src/scripts/autodeploy-i18n
+. "${BASH_SOURCE[0]%/*}/autodeploy-i18n"
 # Shared settings validation and isolation of runtime accounts from deployment.
 
 autodeploy_validate_settings() {
   if ! [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-    printf '[AutoDeploy] 错误: REPO_NAME 必须以字母或数字开头，且仅包含字母、数字、下划线、点和连字符\n' >&2
+    printf "$(autodeploy_text '[AutoDeploy] Error: REPO_NAME must start with a letter or digit and contain only letters, digits, underscores, dots and hyphens\n')" >&2
     return 1
   fi
   if ! [[ "$2" =~ ^[A-Za-z0-9_.-]+$ ]] || [ "$2" = . ] || [ "$2" = .. ]; then
-    printf '[AutoDeploy] 错误: AUTODEPLOY_CONFIG_NAME 必须是项目根目录下的普通文件名\n' >&2
+    printf "$(autodeploy_text '[AutoDeploy] Error: AUTODEPLOY_CONFIG_NAME must be a plain filename in the project root\n')" >&2
     return 1
   fi
   case "$3" in
     commit|branch) ;;
-    *) printf '[AutoDeploy] 错误: DEPLOY_TAG_MODE 只能是 commit 或 branch\n' >&2; return 1 ;;
+    *) printf "$(autodeploy_text '[AutoDeploy] Error: DEPLOY_TAG_MODE must be commit or branch\n')" >&2; return 1 ;;
   esac
 }
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-. "$root/scripts/autodeploy-runtime"
+. "$root/src/scripts/autodeploy-runtime"
 
 autodeploy_validate_settings app AutoDeploy.config.yaml commit
 autodeploy_validate_settings project-1.2_test .deploy.yaml branch

@@ -36,9 +36,9 @@ class EndpointTests(unittest.TestCase):
         for key in ["AUTODEPLOY_HOST", "AUTODEPLOY_HTTP_PORT", "AUTODEPLOY_SSH_PORT", "AUTODEPLOY_HTTP_USER"]:
             env.pop(key, None)
         env.update(
-            AUTODEPLOY_DATA_DIR=str(self.data), HOSTNAME="autodeploy-test-container",
+            AUTODEPLOY_LANG="en", AUTODEPLOY_DATA_DIR=str(self.data), HOSTNAME="autodeploy-test-container",
             REPO_NAME="app", DEPLOY_BRANCH="main", MOCK_BINDINGS=bindings,
-            MOCK_STATUS=str(status), ENDPOINT_SCRIPT=str(ROOT / "scripts/autodeploy-endpoints"),
+            MOCK_STATUS=str(status), ENDPOINT_SCRIPT=str(ROOT / "src/scripts/autodeploy-endpoints"),
         )
         env.update(settings)
         return subprocess.run(["bash", "-c", HARNESS], env=env, check=True, capture_output=True, text=True).stdout
@@ -46,7 +46,7 @@ class EndpointTests(unittest.TestCase):
     def test_published_port_and_unpublished_ssh(self):
         output = self.render()
         self.assertIn("http://autodeploy@<host>:8096/app.git", output)
-        self.assertIn("SSH 未发布宿主机端口", output)
+        self.assertIn("SSH has no published host port", output)
         self.assertNotIn(":8080/", output)
         self.assertNotIn(":2222/", output)
 
@@ -59,7 +59,7 @@ class EndpointTests(unittest.TestCase):
         )
         self.assertIn("http://saved-user@deploy.example.test:8096/project.git", output)
         self.assertIn("ssh://git@deploy.example.test:22022/~/project.git", output)
-        self.assertIn("部署分支: release/*", output)
+        self.assertIn("deployment branch: release/*", output)
         self.assertNotIn("unused-test-hash", output)
 
     def test_specific_addresses_ipv6_and_wildcard_deduplication(self):
@@ -70,9 +70,9 @@ class EndpointTests(unittest.TestCase):
 
     def test_no_published_port_is_not_an_inspection_failure(self):
         output = self.render(bindings="")
-        self.assertIn("HTTP 未发布宿主机端口", output)
-        self.assertNotIn("HTTP 推送地址:", output)
-        self.assertNotIn("无法检测宿主机端口", output)
+        self.assertIn("HTTP has no published host port", output)
+        self.assertNotIn("HTTP push address:", output)
+        self.assertNotIn("Cannot detect host port", output)
 
     def test_gateway_ports_without_published_ports(self):
         for status in [0, 1]:
@@ -83,7 +83,7 @@ class EndpointTests(unittest.TestCase):
 
     def test_inspection_failure_uses_address_templates(self):
         output = self.render(bindings="", status=1)
-        self.assertIn("无法检测宿主机端口", output)
+        self.assertIn("Cannot detect host port", output)
         self.assertIn(":<HTTP_PORT>/app.git", output)
         self.assertNotIn(":8080/", output)
         self.assertNotIn(":2222/", output)
@@ -91,6 +91,19 @@ class EndpointTests(unittest.TestCase):
     def test_ipv6_external_host_is_bracketed(self):
         output = self.render(bindings="", status=1, AUTODEPLOY_HOST="2001:db8::1")
         self.assertIn("http://autodeploy@[2001:db8::1]:<HTTP_PORT>/app.git", output)
+
+    def test_chinese_and_unknown_language(self):
+        chinese = self.render(AUTODEPLOY_LANG="zh")
+        self.assertIn("HTTP 推送地址:", chinese)
+        self.assertIn("部署分支: main", self.render(AUTODEPLOY_LANG="zh", AUTODEPLOY_SSH_PORT="2222"))
+        self.assertIn("SSH 未发布宿主机端口", chinese)
+        self.assertEqual(self.render(AUTODEPLOY_LANG="unsupported"), self.render())
+
+    def test_untrusted_values_are_not_evaluated(self):
+        host = "$(touch /tmp/autodeploy-i18n-unexpected);%s\\test"
+        for language in ("en", "zh"):
+            output = self.render(AUTODEPLOY_LANG=language, AUTODEPLOY_HOST=host)
+            self.assertIn(host, output)
 
 
 if __name__ == "__main__":

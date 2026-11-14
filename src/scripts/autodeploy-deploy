@@ -26,7 +26,7 @@ ENV_FILE="/etc/autodeploy/env"
 SUPERVISOR_CONF_DIR="/etc/supervisor/conf.d"
 SUPERVISOR_CTL_CONF="/etc/supervisor/supervisord.conf"
 DEFAULT_PATH="$PATH"
-# shellcheck source=scripts/autodeploy-runtime
+# shellcheck source=src/scripts/autodeploy-runtime
 . /usr/local/bin/autodeploy-runtime
 
 STATE_NAME=""
@@ -68,7 +68,7 @@ log() {
 }
 
 warn() {
-  local line="[AutoDeploy] 警告: $*"
+  local line="$(autodeploy_msg '[AutoDeploy] Warning: %s' "$*")"
   printf '%s\n' "$line" >&2
   if [ -n "$LOG_FILE" ]; then
     printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$LOG_FILE" 2>/dev/null || true
@@ -104,10 +104,10 @@ mark_failed() {
        .failed_at = strenv(APP_AT)
      ' > "$f.tmp" 2>/dev/null; then
     mv "$f.tmp" "$f"
-    log "已标记失败提交: $commit ($branch)"
+    log "$(autodeploy_msg 'Marked failed commit: %s (%s)' "$commit" "$branch")"
   else
     rm -f "$f.tmp"
-    log "警告: 写入失败提交标记失败"
+    log "$(autodeploy_text 'Warning: failed to write failed-commit marker')"
   fi
 }
 
@@ -135,13 +135,13 @@ write_status() {
     mv "$STATE_DIR/deploy.json.tmp" "$STATE_DIR/deploy.json"
   else
     rm -f "$STATE_DIR/deploy.json.tmp"
-    log "警告: 写入部署状态失败"
+    log "$(autodeploy_text 'Warning: failed to write deployment status')"
     return 1
   fi
 }
 
 die() {
-  local line="[AutoDeploy] 错误: $*"
+  local line="$(autodeploy_msg '[AutoDeploy] Error: %s' "$*")"
   printf '%s\n' "$line" >&2
   if [ -n "$LOG_FILE" ]; then
     printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$line" >> "$LOG_FILE" 2>/dev/null || true
@@ -173,12 +173,12 @@ cleanup_run_dir() {
   trap - EXIT
   if [ "$status" -ne 0 ] && [ "$TRANSACTION_ACTIVE" = "1" ] && [ "$ROLLING_BACK" != "1" ]; then
     local failed_commit="$STATE_COMMIT" failed_branch="$STATE_BRANCH"
-    mark_failed "$failed_commit" "$failed_branch" "部署中止" "false"
-    if ! rollback_if_possible "部署中止"; then
+    mark_failed "$failed_commit" "$failed_branch" "$(autodeploy_text 'Deployment aborted')" "false"
+    if ! rollback_if_possible "$(autodeploy_text 'Deployment aborted')"; then
       STATE_COMMIT="$failed_commit"
       STATE_BRANCH="$failed_branch"
       FAILED_COMMIT="$failed_commit"
-      write_status failed "部署中止，未能恢复上一版本"
+      write_status failed "$(autodeploy_text 'Deployment aborted; failed to restore previous version')"
     else
       rm -f "$STATE_DIR/pending.json"
     fi
@@ -240,7 +240,7 @@ write_exports() {
     key="${kv%%=*}"
     value="${kv#*=}"
     if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      die "非法环境变量名: $key"
+      die "$(autodeploy_msg 'Invalid environment variable name: %s' "$key")"
     fi
     printf 'export %s=%q\n' "$key" "$value"
   done < <(yq -r0 "$expr" "$file")
@@ -252,27 +252,27 @@ write_env_exports() {
 
 validate_types() {
   local t
-  yq '.' "$CFG" >/dev/null 2>&1 || die "YAML 解析失败: $CONFIG_NAME"
+  yq '.' "$CFG" >/dev/null 2>&1 || die "$(autodeploy_msg 'Failed to parse YAML: %s' "$CONFIG_NAME")"
   t="$(yq -r '.env | type' "$CFG")"
-  case "$t" in null|'!!null'|'!!map') ;; *) die "env 必须是键值映射" ;; esac
+  case "$t" in null|'!!null'|'!!map') ;; *) die "$(autodeploy_text 'env must be a key-value mapping')" ;; esac
   local field
   if [ "$STATE_TYPE" = "docker-compose" ]; then
     t="$(yq -r '.build | type' "$CFG")"
-    case "$t" in null|'!!null'|'!!bool'|'!!str') ;; *) die "build 必须是布尔值" ;; esac
+    case "$t" in null|'!!null'|'!!bool'|'!!str') ;; *) die "$(autodeploy_text 'build must be a boolean')" ;; esac
   else
     for field in install build; do
       t="$(yq -r ".$field | type" "$CFG")"
-      case "$t" in null|'!!null'|'!!seq'|'!!str') ;; *) die "$field 必须是命令字符串列表" ;; esac
+      case "$t" in null|'!!null'|'!!seq'|'!!str') ;; *) die "$(autodeploy_msg '%s must be a list of command strings' "$field")" ;; esac
     done
   fi
   t="$(yq -r '.environment | type' "$CFG")"
-  case "$t" in null|'!!null'|'!!map') ;; *) die "environment 必须是映射" ;; esac
+  case "$t" in null|'!!null'|'!!map') ;; *) die "$(autodeploy_text 'environment must be a mapping')" ;; esac
   t="$(yq -r '.healthcheck | type' "$CFG")"
-  case "$t" in null|'!!null'|'!!map') ;; *) die "healthcheck 必须是映射" ;; esac
+  case "$t" in null|'!!null'|'!!map') ;; *) die "$(autodeploy_text 'healthcheck must be a mapping')" ;; esac
   t="$(yq -r '.services | type' "$CFG")"
-  case "$t" in null|'!!null'|'!!seq') ;; *) die "services 必须是列表" ;; esac
+  case "$t" in null|'!!null'|'!!seq') ;; *) die "$(autodeploy_text 'services must be a list')" ;; esac
   t="$(yq -r '.deploy | type' "$CFG")"
-  case "$t" in null|'!!null'|'!!map') ;; *) die "deploy 必须是映射" ;; esac
+  case "$t" in null|'!!null'|'!!map') ;; *) die "$(autodeploy_text 'deploy must be a mapping')" ;; esac
 }
 
 prepare_environment() {
@@ -299,11 +299,11 @@ prepare_environment() {
   force="$(cfg_str '.environment.force' 'false')"
   if [ "$force" != "true" ] && [ "$same_instance" = "1" ] && [ -n "$old_hash" ] && [ "$new_hash" = "$old_hash" ]; then
     rm -f "$tmp"
-    log "基础环境未变化，跳过构建"
+    log "$(autodeploy_text 'Base environment unchanged; skipping build')"
     return 0
   fi
 
-  log "根据 $CONFIG_NAME 构建基础环境"
+  log "$(autodeploy_msg 'Building base environment from %s' "$CONFIG_NAME")"
   local -a packages=() missing=() setup_commands=()
   local item
   while IFS= read -r -d '' item; do
@@ -327,35 +327,35 @@ prepare_environment() {
     for item in "${missing[@]}"; do
       install_cmd+=" $(printf '%q' "$item")"
     done
-    if ! run_root_command "安装系统包: ${missing[*]}" \
+    if ! run_root_command "$(autodeploy_msg 'Installing system packages: %s' "${missing[*]}")" \
       "export DEBIAN_FRONTEND=noninteractive; apt-get update; $install_cmd"; then
-      die "系统包安装失败: ${missing[*]}"
+      die "$(autodeploy_msg 'System package installation failed: %s' "${missing[*]}")"
     fi
   fi
 
   for item in "${setup_commands[@]}"; do
-    if ! run_root_command "执行 environment.setup: $item" "$item"; then
-      die "environment.setup 执行失败: $item"
+    if ! run_root_command "$(autodeploy_msg 'Running environment.setup: %s' "$item")" "$item"; then
+      die "$(autodeploy_msg 'environment.setup failed: %s' "$item")"
     fi
   done
 
   mv "$tmp" "$snapshot"
   printf '%s\n' "$boot_id" > "$STATE_DIR/environment.boot"
-  log "基础环境构建完成"
+  log "$(autodeploy_text 'Base environment build complete')"
 }
 
 restore_environment() {
   local target="${1:-}" mode="${2:-environment}" deploy_root
   if [ -z "$target" ]; then
-    printf '用法: autodeploy-deploy --prepare-env <项目目录>\n' >&2
+    printf "$(autodeploy_text 'Usage: autodeploy-deploy --prepare-env <project-directory>\n')" >&2
     return 1
   fi
   TARGET="$(realpath -m -- "$target")"
   TARGET_REAL="$TARGET"
   deploy_root="$(realpath -m -- "$DATA_DIR/deploy")"
-  case "$TARGET" in "$deploy_root"/*) ;; *) die "拒绝恢复: 项目目录越界" ;; esac
+  case "$TARGET" in "$deploy_root"/*) ;; *) die "$(autodeploy_text 'Refusing restore: project directory is outside the allowed root')" ;; esac
   CFG="$TARGET/$CONFIG_NAME"
-  [ ! -L "$CFG" ] || die "$CONFIG_NAME 不能是符号链接"
+  [ ! -L "$CFG" ] || die "$(autodeploy_msg '%s must not be a symlink' "$CONFIG_NAME")"
   if [ ! -f "$CFG" ]; then
     return 0
   fi
@@ -366,7 +366,7 @@ restore_environment() {
   validate_types
   STATE_NAME="$(cfg_str '.name' "$REPO_NAME")"
   if ! [[ "$STATE_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-    printf '[AutoDeploy] 警告: 应用名非法，跳过基础环境恢复: %s\n' "$STATE_NAME" >&2
+    printf "$(autodeploy_text '[AutoDeploy] Warning: invalid application name; skipping base environment restore: %s\n')" "$STATE_NAME" >&2
     return 0
   fi
   STATE_DIR="$DATA_DIR/state/$STATE_NAME"
@@ -390,7 +390,7 @@ run_project_hook() {
   if [ ! -f "$hook" ]; then
     return 0
   fi
-  log "执行 .AutoDeploy/$stage.sh"
+  log "$(autodeploy_msg 'Executing .AutoDeploy/%s.sh' "$stage")"
   runner="$RUN_DIR/hook-$stage.sh"
   {
     printf '#!/bin/bash\nset -e\n'
@@ -405,7 +405,7 @@ run_project_hook() {
     printf 'exec /bin/bash %q\n' "$hook"
   } > "$runner"
   chmod 700 "$runner"
-  if ! run_script_as root "运行 .AutoDeploy/$stage.sh" "$runner"; then
+  if ! run_script_as root "$(autodeploy_msg 'Running .AutoDeploy/%s.sh' "$stage")" "$runner"; then
     rm -f "$runner"
     return 1
   fi
@@ -424,7 +424,7 @@ run_workflows() {
     run_workflow_file "$wf"
   done
   if [ "$ran" = "0" ]; then
-    log ".AutoDeploy/workflows 下没有 workflow 文件"
+    log "$(autodeploy_text 'No workflow files under .AutoDeploy/workflows')"
   fi
   return 0
 }
@@ -433,16 +433,16 @@ run_workflow_file() {
   local wf="$1" wf_name jobs_file job
   wf_name="$(basename "$wf")"
   if ! yq '.' "$wf" >/dev/null 2>&1; then
-    die "workflow 解析失败: $wf_name"
+    die "$(autodeploy_msg 'Failed to parse workflow: %s' "$wf_name")"
   fi
   jobs_file="$RUN_DIR/workflow-jobs.txt"
   yq -r '.jobs // {} | to_entries | .[] | .key' "$wf" > "$jobs_file"
   if [ ! -s "$jobs_file" ]; then
-    log "workflow $wf_name 没有 jobs，跳过"
+    log "$(autodeploy_msg 'Workflow %s has no jobs; skipping' "$wf_name")"
     rm -f "$jobs_file"
     return 0
   fi
-  log "执行 workflow: $wf_name"
+  log "$(autodeploy_msg 'Running workflow: %s' "$wf_name")"
   while IFS= read -r job; do
     if [ -n "$job" ]; then
       run_workflow_job "$wf" "$wf_name" "$job"
@@ -458,16 +458,16 @@ run_workflow_job() {
 
   for probe in strategy services container; do
     if [ "$(yq -r "${job_path}.${probe} != null" "$wf")" = "true" ]; then
-      die "workflow $wf_name job $job: 暂不支持 $probe"
+      die "$(autodeploy_msg 'Workflow %s job %s: unsupported %s' "$wf_name" "$job" "$probe")"
     fi
   done
   if [ "$(yq -r "${job_path}.needs != null" "$wf")" = "true" ]; then
-    log "警告: workflow $wf_name job $job 的 needs 被忽略，按文件顺序执行"
+    log "$(autodeploy_msg 'Warning: workflow %s job %s ignores needs; executing in file order' "$wf_name" "$job")"
   fi
 
   steps_count="$(yq -r "(${job_path}.steps // []) | length" "$wf")"
   if [ "$steps_count" = "0" ]; then
-    log "workflow $wf_name job $job 没有 steps，跳过"
+    log "$(autodeploy_msg 'Workflow %s job %s has no steps; skipping' "$wf_name" "$job")"
     return 0
   fi
   default_shell="$(yq -r '.defaults.run.shell // ""' "$wf")"
@@ -481,7 +481,7 @@ run_workflow_job() {
     "((.env // {}) * (${job_path}.env // {})) | to_entries | .[] | .key + \"=\" + (.value | tostring)" \
     >> "$job_env_file"
 
-  log "workflow $wf_name / job $job（$steps_count 步）"
+  log "$(autodeploy_msg 'Workflow %s / job %s (%s steps)' "$wf_name" "$job" "$steps_count")"
   for ((i = 0; i < steps_count; i++)); do
     local step_path step_name step_uses step_run step_shell step_wd step_if step_coe label
     printf -v step_path '%s.steps[%d]' "$job_path" "$i"
@@ -497,19 +497,19 @@ run_workflow_job() {
     if [ -n "$step_uses" ]; then
       case "$step_uses" in
         actions/checkout@*)
-          log "workflow $wf_name / $job / $label: 跳过 $step_uses（代码已检出）"
+          log "$(autodeploy_msg 'Workflow %s / %s / %s: skipping %s (code already checked out)' "$wf_name" "$job" "$label" "$step_uses")"
           continue
           ;;
         *)
-          die "workflow $wf_name / $job / $label: 不支持 uses: $step_uses（仅支持 actions/checkout）"
+          die "$(autodeploy_msg 'Workflow %s / %s / %s: unsupported uses: %s (only actions/checkout is supported)' "$wf_name" "$job" "$label" "$step_uses")"
           ;;
       esac
     fi
     if [ -z "$step_run" ]; then
-      die "workflow $wf_name / $job / $label: 步骤缺少 run"
+      die "$(autodeploy_msg 'Workflow %s / %s / %s: step is missing run' "$wf_name" "$job" "$label")"
     fi
     if [ -n "$step_if" ]; then
-      log "警告: workflow $wf_name / $job / $label 的 if 条件被忽略（按上一步成功后执行）"
+      log "$(autodeploy_msg 'Warning: workflow %s / %s / %s ignores if (runs after previous step succeeds)' "$wf_name" "$job" "$label")"
     fi
 
     local effective_shell="$step_shell"
@@ -518,7 +518,7 @@ run_workflow_job() {
     fi
     case "$effective_shell" in
       ""|bash|sh|/bin/bash|/bin/sh) ;;
-      *) die "workflow $wf_name / $job / $label: 不支持的 shell: $effective_shell（仅支持 bash/sh）" ;;
+      *) die "$(autodeploy_msg 'Workflow %s / %s / %s: unsupported shell: %s (only bash/sh supported)' "$wf_name" "$job" "$label" "$effective_shell")" ;;
     esac
 
     local wd_rel="$step_wd" step_dir="$TARGET"
@@ -529,10 +529,10 @@ run_workflow_job() {
       step_dir="$(realpath -ms -- "$TARGET/$wd_rel")"
       case "$step_dir" in
         "$TARGET"|"$TARGET"/*) ;;
-        *) die "workflow $wf_name / $job / $label: working-directory 必须位于项目目录内: $wd_rel" ;;
+        *) die "$(autodeploy_msg 'Workflow %s / %s / %s: working-directory must be inside the project: %s' "$wf_name" "$job" "$label" "$wd_rel")" ;;
       esac
       if [ ! -d "$step_dir" ]; then
-        die "workflow $wf_name / $job / $label: working-directory 不存在: $wd_rel"
+        die "$(autodeploy_msg 'Workflow %s / %s / %s: working-directory does not exist: %s' "$wf_name" "$job" "$label" "$wd_rel")"
       fi
     fi
 
@@ -565,10 +565,10 @@ run_workflow_job() {
     if ! run_script_as root "workflow $wf_name / $job / $label" "$runner"; then
       rm -f "$runner"
       if [ "$step_coe" = "true" ]; then
-        log "步骤失败但 continue-on-error=true，继续: $label"
+        log "$(autodeploy_msg 'Step failed with continue-on-error=true; continuing: %s' "$label")"
         continue
       fi
-      die "workflow $wf_name / $job / $label 执行失败"
+      die "$(autodeploy_msg 'Workflow %s / %s / %s failed' "$wf_name" "$job" "$label")"
     fi
     rm -f "$runner"
 
@@ -581,7 +581,7 @@ run_workflow_job() {
         key="${kv%%=*}"
         value="${kv#*=}"
         if ! [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-          log "警告: 忽略非法 GITHUB_ENV 变量名: $key"
+          log "$(autodeploy_msg 'Warning: ignoring invalid GITHUB_ENV variable name: %s' "$key")"
           continue
         fi
         printf 'export %s=%q\n' "$key" "$value" >> "$job_env_file"
@@ -604,10 +604,10 @@ cleanup_previous() {
     supervisorctl_log stop "$program"
     supervisorctl_log reread
     supervisorctl_log update
-    log "已停止旧的进程托管服务: $program"
+    log "$(autodeploy_msg 'Stopped previous process service: %s' "$program")"
   elif [ "$prev" = "docker-compose" ]; then
     project="autodeploy-$(printf '%s' "$name" | sed 's/[^A-Za-z0-9_.-]/-/g')"
-    log "停止旧的 compose 项目: $project"
+    log "$(autodeploy_msg 'Stopping previous compose project: %s' "$project")"
     [ -n "$directory" ] || directory="$TARGET"
     cf="$(yq -r '.file // ""' "$directory/$CONFIG_NAME")"
     [ -n "$cf" ] && cf="$directory/$cf"
@@ -631,7 +631,7 @@ cleanup_previous() {
     down_args+=(--env-file "$old_env")
     down_args+=(down --remove-orphans)
     if ! "${down_args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
-      log "警告: 停止旧 compose 项目失败"
+      log "$(autodeploy_text 'Warning: failed to stop previous compose project')"
     fi
   fi
 }
@@ -649,7 +649,7 @@ run_phase() {
     chmod 700 "$script"
     if ! run_script_as "$user" "$desc: $cmd" "$script"; then
       rm -f "$script"
-      log "$desc 失败: $cmd"
+      log "$(autodeploy_msg '%s failed: %s' "$desc" "$cmd")"
       return 1
     fi
     rm -f "$script"
@@ -688,16 +688,16 @@ deploy_process() {
   workdir="$(realpath -ms -- "$TARGET/$workdir_rel" 2>/dev/null || printf '%s' "$TARGET/$workdir_rel")"
   case "$workdir" in
     "$TARGET"|"$TARGET"/*) ;;
-    *) log "错误: workdir 必须位于项目目录内: $workdir_rel"; return 1 ;;
+    *) log "$(autodeploy_msg 'Error: workdir must be inside the project directory: %s' "$workdir_rel")"; return 1 ;;
   esac
   if [ ! -d "$workdir" ]; then
-    log "错误: workdir 不存在: $workdir_rel"
+    log "$(autodeploy_msg 'Error: workdir does not exist: %s' "$workdir_rel")"
     return 1
   fi
 
   app_user="$(cfg_str '.user' "${AUTODEPLOY_APP_USER:-autodeploy-app}")"
   if ! autodeploy_runtime_user_allowed "$app_user"; then
-    log "错误: 运行用户不存在或具有部署/管理权限: $app_user（请使用独立业务用户）"
+    log "$(autodeploy_msg 'Error: missing or privileged user: %s. Use a dedicated application user' "$app_user")"
     return 1
   fi
   user_home="$(getent passwd "$app_user" | cut -d: -f6)"
@@ -707,7 +707,7 @@ deploy_process() {
 
   start="$(cfg_str '.start' '')"
   if [ -z "$start" ]; then
-    log "错误: type: process 必须提供 start 命令"
+    log "$(autodeploy_text 'Error: type: process requires a start command')"
     return 1
   fi
 
@@ -721,12 +721,12 @@ deploy_process() {
   chmod 700 "$header"
 
   if [ "$ROLLING_BACK" != "1" ]; then
-    run_phase '.install' git "执行 install 命令" "$header" || return 1
-    run_phase '.build' git "执行 build 命令" "$header" || return 1
+    run_phase '.install' git "$(autodeploy_text 'Running install command')" "$header" || return 1
+    run_phase '.build' git "$(autodeploy_text 'Running build command')" "$header" || return 1
   fi
 
   if ! autodeploy_prepare_runtime_tree "$TARGET_REAL"; then
-    log "错误: 无法保护业务部署目录"
+    log "$(autodeploy_text 'Error: failed to secure application deployment directory')"
     return 1
   fi
   start_sh="$state_dir/start.sh"
@@ -735,7 +735,7 @@ deploy_process() {
     printf 'exec %s\n' "$start"
   } > "$start_sh"
   if ! autodeploy_secure_runtime_files "$app_user" "$state_dir" "$log_dir"; then
-    log "错误: 无法保护业务启动脚本或日志路径"
+    log "$(autodeploy_text 'Error: failed to secure application startup script or log paths')"
     return 1
   fi
   rm -f "$header"
@@ -772,11 +772,10 @@ EOF
   if ! wait_for_program "$program"; then
     local status_out
     status_out="$(supervisorctl -c "$SUPERVISOR_CTL_CONF" status "$program" 2>&1 || true)"
-    log "错误: 进程未成功运行: $program
-$status_out"
+    log "$(autodeploy_msg 'Error: process did not start: %s\n%s' "$program" "$status_out")"
     return 1
   fi
-  log "进程已托管: $program (user=$app_user)"
+  log "$(autodeploy_msg 'Process managed: %s (user=%s)' "$program" "$app_user")"
 }
 
 deploy_compose() {
@@ -791,16 +790,16 @@ deploy_compose() {
     done
   fi
   if [ -z "$file" ] || [ ! -f "$TARGET/$file" ]; then
-    log "错误: 未找到 compose 文件（可通过 file 指定）"
+    log "$(autodeploy_text 'Error: compose file not found (specify it with file)')"
     return 1
   fi
   path="$(realpath -ms -- "$TARGET/$file")"
   case "$path" in
     "$TARGET"/*) ;;
-    *) log "错误: compose 文件必须位于项目目录内: $file"; return 1 ;;
+    *) log "$(autodeploy_msg 'Error: compose file must be inside the project directory: %s' "$file")"; return 1 ;;
   esac
   if ! command -v docker >/dev/null 2>&1; then
-    log "错误: docker CLI 不可用，请以 INSTALL_DOCKER_CLI=1 构建镜像并挂载 /var/run/docker.sock"
+    log "$(autodeploy_text 'Error: docker CLI unavailable; build with INSTALL_DOCKER_CLI=1 and mount /var/run/docker.sock')"
     return 1
   fi
 
@@ -827,9 +826,9 @@ deploy_compose() {
     fi
   done < <(yq -r0 '.services // [] | .[] | tostring' "$CFG")
 
-  log "启动 docker compose 服务 (project=$project)"
+  log "$(autodeploy_msg 'Starting docker compose services (project=%s)' "$project")"
   if ! "${args[@]}" 2>&1 | tee -a "$LOG_FILE"; then
-    log "错误: docker compose 启动失败"
+    log "$(autodeploy_text 'Error: docker compose startup failed')"
     return 1
   fi
 }
@@ -847,23 +846,23 @@ health_check() {
     fi
   fi
   if [ -z "$url" ]; then
-    log "错误: healthcheck 需要 url 或 port"
+    log "$(autodeploy_text 'Error: healthcheck requires url or port')"
     return 1
   fi
   timeout="$(cfg_str '.healthcheck.timeout' '30')"
   case "$timeout" in
-    ''|*[!0-9]*) log "错误: healthcheck.timeout 必须是整数"; return 1 ;;
+    ''|*[!0-9]*) log "$(autodeploy_text 'Error: healthcheck.timeout must be an integer')"; return 1 ;;
   esac
-  log "等待健康检查: $url (最长 ${timeout}s)"
+  log "$(autodeploy_msg 'Waiting for health check: %s (up to %ss)' "$url" "${timeout}")"
   deadline=$((SECONDS + timeout))
   while [ "$SECONDS" -lt "$deadline" ]; do
     if curl -fsS -o /dev/null --max-time 3 "$url"; then
-      log "健康检查通过"
+      log "$(autodeploy_text 'Health check passed')"
       return 0
     fi
     sleep 2
   done
-  log "错误: 健康检查失败: $url"
+  log "$(autodeploy_msg 'Error: health check failed: %s' "$url")"
   return 1
 }
 
@@ -871,18 +870,18 @@ start_service() {
   case "$STATE_TYPE" in
     process)
       if ! deploy_process "$STATE_NAME"; then
-        START_FAILURE="进程启动失败"
+        START_FAILURE="$(autodeploy_text 'Process startup failed')"
         return 1
       fi
       ;;
     docker-compose)
       if ! deploy_compose "$STATE_NAME"; then
-        START_FAILURE="compose 启动失败"
+        START_FAILURE="$(autodeploy_text 'Compose startup failed')"
         return 1
       fi
       ;;
     *)
-      START_FAILURE="不支持的 type: $STATE_TYPE（可选 process / docker-compose）"
+      START_FAILURE="$(autodeploy_msg 'Unsupported type: %s (available: process / docker-compose)' "$STATE_TYPE")"
       return 1
       ;;
   esac
@@ -891,11 +890,11 @@ start_service() {
 
 main() {
   if [ "$(id -u)" != "0" ]; then
-    printf '[AutoDeploy] 错误: 必须以 root 运行（post-receive 通过 sudo 调用）\n' >&2
+    printf "$(autodeploy_text '[AutoDeploy] Error: must run as root (post-receive invokes via sudo)\n')" >&2
     exit 1
   fi
   if [ "$#" -lt 1 ]; then
-    printf '用法: autodeploy-deploy <项目目录> [commit] [branch]\n' >&2
+    printf "$(autodeploy_text 'Usage: autodeploy-deploy <project-directory> [commit] [branch]\n')" >&2
     exit 1
   fi
   if [ "$1" = "--prepare-env" ] || [ "$1" = "--restore-compose" ] || [ "$1" = "--stop-compose" ]; then
@@ -915,20 +914,20 @@ main() {
   deploy_root="$(realpath -ms -- "$DATA_DIR/deploy")"
   case "$TARGET" in
     "$deploy_root"|"$deploy_root"/*) ;;
-    *) die "拒绝部署: 目录必须位于 $deploy_root 下" ;;
+    *) die "$(autodeploy_msg 'Refusing deployment: directory must be under %s' "$deploy_root")" ;;
   esac
   case "$TARGET_REAL" in
     "$deploy_root"/*) ;;
-    *) die "拒绝部署: 实际目录必须位于 $deploy_root 下" ;;
+    *) die "$(autodeploy_msg 'Refusing deployment: resolved directory must be under %s' "$deploy_root")" ;;
   esac
   VERSIONS_ROOT="$deploy_root/.versions/$REPO_NAME"
   CURRENT_LINK="$deploy_root/$REPO_NAME"
   mkdir -p "$VERSIONS_ROOT"
   exec 9>"$VERSIONS_ROOT/.deploy.lock"
-  flock -w 300 9 || die "等待仓库部署锁超时: $REPO_NAME"
+  flock -w 300 9 || die "$(autodeploy_msg 'Timed out waiting for repository deployment lock: %s' "$REPO_NAME")"
   case "$TARGET_REAL" in
     "$VERSIONS_ROOT"/.staging-*)
-      [[ "$STATE_COMMIT" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || die "非法提交 ID"
+      [[ "$STATE_COMMIT" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] || die "$(autodeploy_text 'Invalid commit ID')"
       local version_dir="$VERSIONS_ROOT/${STATE_COMMIT}-${TARGET_REAL##*.staging-}"
       mv "$TARGET_REAL" "$version_dir"
       TARGET_REAL="$version_dir"
@@ -948,20 +947,20 @@ main() {
   TARGET="$TARGET_REAL"
 
   CFG="$TARGET/$CONFIG_NAME"
-  [ ! -L "$CFG" ] || die "$CONFIG_NAME 不能是符号链接"
+  [ ! -L "$CFG" ] || die "$(autodeploy_msg '%s must not be a symlink' "$CONFIG_NAME")"
   if [ ! -f "$CFG" ]; then
-    log "未找到 $CONFIG_NAME，跳过部署"
+    log "$(autodeploy_msg '%s not found; skipping deployment' "$CONFIG_NAME")"
     return 0
   fi
 
   if ! command -v yq >/dev/null 2>&1; then
-    die "未找到 yq，请使用本仓库 Dockerfile 重新构建镜像"
+    die "$(autodeploy_text 'yq missing; rebuild with the project Dockerfile')"
   fi
 
   local version
   version="$(cfg_str '.version' '1')"
   if [ "$version" != "1" ]; then
-    die "不支持的 version: $version（当前仅支持 1）"
+    die "$(autodeploy_msg 'Unsupported version: %s (currently only 1 is supported)' "$version")"
   fi
 
   STATE_TYPE="$(cfg_str '.type' 'process')"
@@ -970,7 +969,7 @@ main() {
   local name
   name="$(cfg_str '.name' "$REPO_NAME")"
   if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]]; then
-    die "name 只能包含字母、数字、下划线、点和连字符，且以字母或数字开头: $name"
+    die "$(autodeploy_msg 'name must start with a letter or digit and contain only letters, digits, underscores, dots and hyphens: %s' "$name")"
   fi
   STATE_NAME="$name"
 
@@ -985,7 +984,7 @@ main() {
   TRANSACTION_ACTIVE=1
 
   local short_commit="${STATE_COMMIT:0:12}" deploy_failed
-  log "部署项目: $name (type=$STATE_TYPE, commit=${short_commit:--}, branch=${STATE_BRANCH:--})"
+  log "$(autodeploy_msg 'Deploying project: %s (type=%s, commit=%s, branch=%s)' "$name" "$STATE_TYPE" "${short_commit:--}" "${STATE_BRANCH:--}")"
   write_status "deploying"
   cp "$STATE_DIR/deploy.json" "$STATE_DIR/pending.json.tmp"
   mv "$STATE_DIR/pending.json.tmp" "$STATE_DIR/pending.json"
@@ -993,7 +992,7 @@ main() {
   prepare_environment
 
   if ! run_project_hook before; then
-    die ".AutoDeploy/before.sh 执行失败，已中止部署"
+    die "$(autodeploy_text '.AutoDeploy/before.sh failed; deployment aborted')"
   fi
 
   run_workflows
@@ -1008,23 +1007,23 @@ main() {
   fi
 
   if [ -z "$deploy_failed" ] && ! health_check; then
-    deploy_failed="健康检查未通过"
+    deploy_failed="$(autodeploy_text 'Health check did not pass')"
   fi
 
   if [ -z "$deploy_failed" ] && ! run_project_hook after; then
-    deploy_failed=".AutoDeploy/after.sh 执行失败"
+    deploy_failed="$(autodeploy_text '.AutoDeploy/after.sh failed')"
   fi
 
   if [ -n "$deploy_failed" ]; then
     local failed_commit="$STATE_COMMIT" failed_branch="$STATE_BRANCH"
-    log "部署失败: $deploy_failed"
+    log "$(autodeploy_msg 'Deployment failed: %s' "$deploy_failed")"
     mark_failed "$STATE_COMMIT" "$STATE_BRANCH" "$deploy_failed" "false"
     if ! rollback_if_possible "$deploy_failed"; then
       STATE_COMMIT="$failed_commit"
       STATE_BRANCH="$failed_branch"
       FAILED_COMMIT="$failed_commit"
       write_status "failed" "$deploy_failed"
-      log "已停止部署，未回退；当前提交已标记为失败"
+      log "$(autodeploy_text 'Deployment stopped without rollback; current commit marked as failed')"
       TRANSACTION_ACTIVE=0
       [ -n "$PREV_COMMIT" ] || rm -f "$STATE_DIR/pending.json"
       exit 1
@@ -1039,7 +1038,7 @@ main() {
   TRANSACTION_ACTIVE=0
   rm -f "$STATE_DIR/pending.json"
   prune_versions
-  log "部署完成: $name ($STATE_TYPE)"
+  log "$(autodeploy_msg 'Deployment complete: %s (%s)' "$name" "$STATE_TYPE")"
 }
 
 backup_previous() {
@@ -1072,7 +1071,7 @@ backup_previous() {
     fi
   fi
   if [ ! -d "$prev_dir" ]; then
-    warn "未找到上一版本目录 ${prev_dir}，失败时将无法自动回退"
+    warn "$(autodeploy_msg 'Previous directory missing: %s. Cannot roll back' "${prev_dir}")"
     return 0
   fi
   PREV_COMMIT="$prev_commit"
@@ -1093,7 +1092,7 @@ backup_previous() {
   cp "$STATE_DIR/previous.json" "$STATE_DIR/last-success.json.tmp"
   mv "$STATE_DIR/last-success.json.tmp" "$STATE_DIR/last-success.json"
   printf '%s\n' "$prev_commit" > "$STATE_DIR/previous.commit"
-  log "已记录上一可用版本: ${prev_commit:0:12}"
+  log "$(autodeploy_msg 'Recorded last successful version: %s' "${prev_commit:0:12}")"
 }
 
 deploy_previous_version() {
@@ -1104,17 +1103,17 @@ deploy_previous_version() {
     TARGET="$TARGET_REAL"
     CFG="$TARGET/$CONFIG_NAME"
     chown -R git:git "$TARGET_REAL" 2>/dev/null || true
-    log "已回退到上一可用版本: ${commit:0:12}"
+    log "$(autodeploy_msg 'Rolled back to last successful version: %s' "${commit:0:12}")"
   else
-    log "警告: 回退到上一版本失败"
+    log "$(autodeploy_text 'Warning: rollback to previous version failed')"
     return 1
   fi
 }
 
 rollback_if_possible() {
-  local failure="${1:-部署失败}" failed_commit="$STATE_COMMIT" failed_branch="$STATE_BRANCH"
+  local failure="${1:-$(autodeploy_text 'Deployment failed')}" failed_commit="$STATE_COMMIT" failed_branch="$STATE_BRANCH"
   if [ -n "$PREV_COMMIT" ] && [ -d "$PREV_BACKUP" ]; then
-    log "部署失败，自动回退到上一可用版本: ${PREV_COMMIT:0:12}"
+    log "$(autodeploy_msg 'Deployment failed; rolling back to: %s' "${PREV_COMMIT:0:12}")"
     ROLLING_BACK=1
     # 类型切换失败时先清理失败类型，再启动上一类型。
     if [ "$SERVICE_CHANGED" = "1" ] && [ "$STATE_TYPE" != "$PREV_TYPE" ]; then
@@ -1127,21 +1126,21 @@ rollback_if_possible() {
     STATE_BRANCH="$PREV_BRANCH"
     deploy_previous_version "$PREV_COMMIT" || return 1
     if ! ( trap - EXIT; prepare_environment ); then
-      log "警告: 回退版本的基础环境恢复失败，继续尝试启动"
+      log "$(autodeploy_text 'Warning: rollback environment restore failed; trying to start')"
     fi
     STATE_TYPE="$(cfg_str '.type' 'process')"
     if { [ "$SERVICE_CHANGED" = "0" ] || start_service; } && health_check; then
       FAILED_COMMIT="$failed_commit"
       mark_failed "$failed_commit" "$failed_branch" "$failure" "true"
-      write_status "success" "已回退到 ${PREV_COMMIT:0:12}"
-      log "回退完成，服务运行于上一可用版本: ${PREV_COMMIT:0:12}"
+      write_status "success" "$(autodeploy_msg 'Rolled back to %s' "${PREV_COMMIT:0:12}")"
+      log "$(autodeploy_msg 'Rollback complete; running version: %s' "${PREV_COMMIT:0:12}")"
       return 0
     fi
     FAILED_COMMIT=""
-    log "警告: 回退版本未能启动或健康检查失败，服务可能不可用"
+    log "$(autodeploy_text 'Warning: rollback failed to start or pass health check; service may be down')"
     return 1
   fi
-  log "没有可用的上一版本，停止部署"
+  log "$(autodeploy_text 'No previous version available; stopping deployment')"
   local link="$DATA_DIR/deploy/$REPO_NAME"
   if [ "$SERVICE_CHANGED" = "1" ] && [ "$STATE_TYPE" = "docker-compose" ] && [ -d "$TARGET_REAL" ]; then
     PREV_TYPE=docker-compose
@@ -1158,7 +1157,7 @@ rollback_if_possible() {
     rm -f "$link"
   fi
   rm -rf "$TARGET_REAL"
-  log "已移除失败的部署目录: $TARGET_REAL"
+  log "$(autodeploy_msg 'Removed failed deployment directory: %s' "$TARGET_REAL")"
   return 1
 }
 

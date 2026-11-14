@@ -1,6 +1,28 @@
 # 开发与发布
 
-本文面向 AutoDeploy 的维护者和贡献者。产品概览见 [README](../README.md)，首次使用见[新手教程](getting-started.md)，业务字段见[配置参考](configuration.md)。
+本页介绍源码构建、测试和发布。使用步骤见[新手教程](getting-started.md)，项目字段见[配置参考](configuration.md)。
+
+## 项目结构与语言
+
+```text
+src/
+  entrypoint.sh          # 容器初始化与恢复
+  scripts/               # 管理命令、Git hook、部署与共享函数
+    autodeploy-i18n       # 英文消息键与中文翻译
+  conf/                  # nginx、SSH、Supervisor、sudo 配置
+ci/                      # 开发检查与发布工具
+tests/                   # 单元与容器回归测试
+docs/                    # 中文使用文档
+examples/                # 业务项目与网关示例
+Dockerfile               # 镜像构建入口
+docker-compose*.yml       # AutoDeploy 服务启动配置
+```
+
+在仓库根目录执行构建命令。容器内命令位于 `/usr/local/bin`，配置路径不变。镜像附带的源码保留 `src/` 布局，可用原 Dockerfile 重建。
+
+运行提示默认英文，可[切换中文](operations.md#输出语言)。文档和注释不切换；业务输出、历史日志和状态消息保留原文。
+
+新增消息使用英文键：固定文本调用 `autodeploy_text`，动态值调用 `autodeploy_msg 'Message: %s' "$value"`。中文译文放在 `src/scripts/autodeploy-i18n`，保留相同占位符，禁止 `eval`。未知语言和缺失翻译回退英文，无需 gettext。
 
 ## 构建与运行源码
 
@@ -51,7 +73,7 @@ docker compose -f docker-compose.yml -f docker-compose.docker.yml up -d --build
 
 ## 本地检查
 
-检查代码使用 Python 标准库，不需要安装 Python 包。准备 Python 3.10+、Git、Bash 4+、ShellCheck 和 Docker，然后在仓库根目录执行：
+准备 Python 3.10+、Git、Bash 4+、ShellCheck 和 Docker，无需安装 Python 包。在仓库根目录执行：
 
 ```bash
 python3 -B ci/checks.py lint
@@ -70,7 +92,7 @@ python3 -B ci/checks.py containers --build --docker-cli 1 --image autodeploy:ci-
 
 容器检查使用独立的临时容器和数据卷，完成后自动清理。`--build` 构建 `autodeploy:ci`；如已有镜像，可使用 `--image <镜像>`。指定 `--platform linux/amd64` 或 `--platform linux/arm64` 可以分别验证两个架构；测试其他架构时，Docker 必须具备相应模拟器。
 
-检查过程由 Python 调用项目实际使用的工具。部署脚本仍以 Bash 运行；敏感信息扫描器仍使用 `.opencode/skills/sensitive-info-check/scan.sh`，Python 自检验证其真实结果。
+Python 检查入口调用实际 Bash 脚本和敏感信息扫描器，避免测试与运行行为脱节。
 
 ## GitHub Actions
 
@@ -82,13 +104,13 @@ python3 -B ci/checks.py containers --build --docker-cli 1 --image autodeploy:ci-
 | 推送指向 main 历史提交的版本标签 | 校验标签并运行 CI | CI 通过后发布到 GHCR |
 | 推送未合并分支上的版本标签 | 校验后跳过 | 不发布 |
 
-[ci.yml](../.github/workflows/ci.yml) 检查所有分支的提交，并在 PR 创建、代码更新、信息修改或重新打开时运行，也供版本发布复用。PR 检查使用 GitHub 生成的合并提交，验证更改与目标分支合并后的结果。[publish-ghcr.yml](../.github/workflows/publish-ghcr.yml) 只接收版本标签推送，PR 事件不会触发镜像发布。
+[ci.yml](../.github/workflows/ci.yml) 负责分支、PR 和发布前检查。PR 检查使用 GitHub 生成的合并提交。[publish-ghcr.yml](../.github/workflows/publish-ghcr.yml) 只响应版本标签推送。
 
-分支提交和 PR 使用 `paths-ignore` 跳过纯文档改动：`docs/` 下的文件，以及任意目录中的 `.md`、`.markdown`、`.rst`、`.adoc` 文件，例如 README、SECURITY 和开发文档。只要改动中包含其他文件，CI 就会运行；判断依据是文件路径，而不是提交消息中的 `docs:` 前缀。
+分支和 PR 的纯文档改动会跳过 CI：`docs/**`，以及 `.md`、`.markdown`、`.rst`、`.adoc` 文件。是否跳过取决于路径，与提交消息的 `docs:` 前缀无关。
 
 构建使用的 `LICENSE`、`NOTICE` 和敏感信息扫描规则 `patterns.txt` 不属于排除范围。版本标签发布通过 `workflow_call` 调用完整 CI，不受分支或 PR 的文档路径排除影响。
 
-Git 标签本身没有所属分支。发布检查获取完整历史，用 `git merge-base --is-ancestor` 确认标签提交已被远端 main 包含。附注标签和轻量标签均可使用。CI 与镜像构建使用同一个已验证的提交 SHA。CI 通过后，发布任务再次检查 main 历史及标签、构建提交是否与 CI 一致；任一条件不满足，就停止发布。
+版本标签必须指向远端 main 已包含的提交，轻量标签和附注标签均可。CI 和构建使用同一 SHA；发布前再次核验 main、标签和构建提交，不一致就停止。
 
 ## 发布版本
 
@@ -97,7 +119,7 @@ Git 标签本身没有所属分支。发布检查获取完整历史，用 `git m
 3. 更新本地 main，确认发布内容已进入远端 main，并为该提交创建新的版本标签。
 4. 推送该版本标签。GitHub Actions 校验 main 历史并运行 CI。检查全部通过且发布前复核通过后，构建两个平台的镜像并发布到 GHCR。
 
-发布顺序是：**发布内容进入远端 main → 推送版本标签 → CI 通过 → 发布前复核 → 发布镜像**。PR 创建、更新或合并事件本身都不会发布镜像。在内容合并前推送的标签会被跳过，不会因之后合并 PR 而自动补发。
+发布顺序：**合入远端 main → 推送版本标签 → CI → 复核 → 发布镜像**。合并前推送的标签不会发布，后续合并也不会自动补发。
 
 版本标签采用 `VMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH`，例如 `V0.1.3`；可加 `-rc.1` 等预发布后缀。数字部分不允许多余的前导零，标签总长度不得超过 128 个字符。镜像标签与 Git 标签一致，例如 `ghcr.io/creationwong/autodeploy:V0.1.3`。每次发布使用新的标签。
 
@@ -142,13 +164,15 @@ git push (SSH / HTTP)
 
 ## 部署事务与恢复
 
-每次部署尝试使用独立版本目录 `deploy/.versions/<repo>/<commit>-<attempt>`，同一提交重试不会覆盖已有目录。`deploy/<repo>` 只在健康检查和 `after.sh` 通过后原子切换；部署期间读取本次版本的固定路径。仓库锁覆盖切换、回退和清理，等待锁的导出目录保持 staging 状态。部署前从独立的 `last-success.json` 记录上一可用版本，失败（环境准备、before/workflow、进程启动、compose、健康检查或 after 阶段）时：
+每次部署使用独立目录 `deploy/.versions/<repo>/<commit>-<attempt>`。健康检查和 `after.sh` 通过后才切换 `deploy/<repo>`。部署锁覆盖切换、回退和清理；等待锁的目录保持 staging 状态。上一成功版本记录在 `last-success.json`。任一部署阶段失败时：
 
-1. 先把失败的提交写入 `state/<name>/failed.json` 并在 `deploy.json.failed_commit` 记录（"标记这个提交"）；
-2. 存在上一可用版本 → 把 `deploy/<repo>` 符号链接原子切回上一版本目录，重放旧配置的 `environment`，重新拉起该版本并**再跑一次健康检查**，通过后写回 `success`（`failed_commit` 仍指向失败提交），服务保持可用；
-3. 没有上一可用版本（首次部署）→ 停止失败的服务（process 停 supervisor、compose 停项目）、移除失败版本目录与符号链接，仅保留失败标记。
+1. 将失败提交记录到 `failed.json` 和 `deploy.json.failed_commit`。
+2. 有上一版本：切回旧目录、恢复环境并启动，再做健康检查；通过后状态为 `success`，保留失败提交记录。
+3. 无上一版本：停止失败服务，删除失败版本目录与链接，保留失败记录。
 
-回退不需要复制代码，也不重跑旧版本的 install/build；部署前失败时保留仍在运行的旧服务。`docker-compose` 回退会重建 compose 栈并清理孤儿容器。容器重启时通过 `pending.json` / `deploying` 状态检测中断，按 `previous.json` 恢复旧目录和该版本保存的启动脚本、Supervisor 配置；compose 类型重放旧栈。缺少启动快照时禁用自动启动并提示手动部署，避免用新命令启动旧代码。最近 5 个版本之外仍会保护当前和回退目录。`autodeploy show` 会显示 `failed_commit` 与 `failed.json` 标记。
+回退不复制代码，也不重跑 install/build；新服务启动前失败时保留旧服务。Compose 回退会重建旧栈并清理孤儿容器。
+
+重启时根据 `pending.json` 或 `deploying` 检测中断，按 `previous.json` 恢复旧目录及启动快照。快照缺失则禁用自动启动，需手动部署。清理保留最近 5 个版本，并保护当前版本和回退目录。
 
 ## 许可证与再分发
 

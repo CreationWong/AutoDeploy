@@ -1,10 +1,10 @@
 # 项目配置参考
 
-本文用于查询字段。第一次使用请先完成[新手教程](getting-started.md)；AutoDeploy 服务自身的环境变量见[部署指南](deployment.md#环境变量)。
+在这里查询项目字段。首次使用见[新手教程](getting-started.md)，服务环境变量见[部署指南](deployment.md#环境变量)。
 
 ## 配置文件
 
-放在项目根目录（可用 `AUTODEPLOY_CONFIG_NAME` 改名）。配置文件名仅允许字母、数字、点、下划线和连字符，不能是 `.`、`..` 或路径。启动、手动设置与部署入口会使用相同规则校验。
+将 `AutoDeploy.config.yaml` 放在项目根目录，可用 `AUTODEPLOY_CONFIG_NAME` 改名。文件名只能包含字母、数字、点、下划线和连字符，不能是 `.`、`..` 或路径。
 
 ### 公共字段
 
@@ -39,7 +39,7 @@ deploy:
 start: node server.js
 ```
 
-说明：`deploy.branches` 未写则回退到环境变量 `DEPLOY_BRANCH`；`branch` 模式下会在匹配 `deploy.branches`（或其回退值）的分支中查找包含该标签提交的分支并部署其最新提交。
+未设置 `deploy.branches` 时使用 `DEPLOY_BRANCH`。`branch` 模式会在匹配分支中查找包含该标签提交的分支，再部署其最新提交。
 
 ### environment（基础环境构建）
 
@@ -51,7 +51,7 @@ start: node server.js
 | `setup` | 以 root 执行的初始化命令列表（添加软件源、安装语言运行时等） |
 | `force` | 为 `true` 时忽略缓存强制重建 |
 
-配置内容按 sha256 缓存，未变化输出 `基础环境未变化，跳过构建`。安装在容器可写层；容器被重建后入口脚本会按持久化快照自动重放，恢复成功后再启动应用；软件源或网络不可用时仍可能恢复失败。
+环境配置不变时跳过构建。容器重建后会按已保存的配置恢复环境，再启动应用；恢复需要软件源和网络可用。
 
 ```yaml
 version: 1
@@ -94,9 +94,11 @@ healthcheck:
 
 > 运行时准备：简单依赖使用 `environment.packages` / `environment.setup`。需要预装 Node、JDK 等完整工具链时，按项目要求选择兼容的基础镜像，见[构建与运行源码](development.md#构建与运行源码)。
 
-业务进程使用独立身份，不能修改部署代码、启动脚本、日志路径或 Git 凭据。发布前将代码与构建产物交还给 `git`，统一开放读取/目录遍历权限，并移除组和其它用户的写权限。运行时可写数据放在自己的 `HOME`（默认 `/home/autodeploy-app`）或专门配置的业务数据目录，勿写入部署目录；该 HOME 默认不持久化。自定义 `user` 必须已存在，且不能属于 `root`、`git`、`docker`、`sudo`、`wheel` 组。安装/构建的 HOME 为 Git 用户目录，运行时 HOME 为业务用户目录。
+业务进程以独立用户运行，部署代码和构建产物只读，也不能修改启动脚本、日志路径或 Git 凭据。可写数据请放在用户 HOME 或专用数据目录；默认 HOME 为 `/home/autodeploy-app`，不持久化。
 
-升级时，入口脚本会将已有 Supervisor 快照中的 root/git 运行身份迁移为默认业务用户，并保护启动脚本与日志目录。显式配置的 `user: root` / `user: git` 需要从项目配置移除，否则后续部署会被拒绝；依赖部署目录可写或高权限的应用也需要调整后重新推送。
+自定义 `user` 必须已存在，且不属于 `root`、`git`、`docker`、`sudo`、`wheel` 组。安装和构建使用 Git 用户 HOME，运行时使用业务用户 HOME。
+
+升级时会把旧快照中的 root/git 运行用户迁移为默认业务用户。项目中显式配置的 `user: root` / `user: git` 仍会被拒绝，请移除后重新推送。依赖高权限或写入部署目录的应用也需调整。
 
 ### type: docker-compose（兄弟容器）
 
@@ -107,7 +109,7 @@ healthcheck:
 | `build` | 可选，是否 `up --build`，默认 `true` |
 | `env` | 透传给 compose（可用于 `${VAR}` 插值，写入 `--env-file`） |
 
-服务端口由应用自己的 compose 用 `ports:` 发布，或加入外部网络由网关代理，AutoDeploy 不写死应用端口。容器内做健康检查时用 `host.docker.internal` 或网络内 DNS。
+业务端口由项目 Compose 的 `ports:` 或外部网关提供。健康检查使用 `host.docker.internal` 或网络内地址。
 
 ```yaml
 version: 1
@@ -160,7 +162,16 @@ jobs:
           python3 -m compileall -q .
 ```
 
-- 支持：`jobs`（按定义顺序）、`steps`、`run`（含多行）、`name`、workflow/job/step 三级 `env`（就近覆盖）、`working-directory`、`defaults.run.shell` / `defaults.run.working-directory`、`continue-on-error`、`actions/checkout`（跳过，代码已检出）、`GITHUB_ENV` 跨步骤传变量；
-- 自动注入：`CI=true`、`GITHUB_WORKSPACE`、`GITHUB_SHA`、`GITHUB_REF_NAME`、`AUTODEPLOY_*`；
-- 不支持：`uses`（除 actions/checkout）、`strategy/matrix`、`services`、`container`（报错中止）；`if`、`needs` 忽略并警告；`on`、`runs-on` 仅兼容忽略；
-- 步骤以 root 执行，部署前会把工作目录交还给 `git` 用户。
+| 能力 | 支持情况 |
+| --- | --- |
+| 执行顺序 | job 按定义顺序，step 依次执行 |
+| 命令 | `run` 支持多行，shell 支持 bash/sh |
+| 环境变量 | workflow/job/step 的 `env` 就近覆盖；`GITHUB_ENV` 可传给后续步骤 |
+| 工作目录 | 支持 `working-directory` 和 `defaults.run.working-directory` |
+| 默认 shell | 支持 `defaults.run.shell` |
+| 失败继续 | 支持 `continue-on-error` |
+| `uses` | 仅接受 `actions/checkout`，因代码已检出而跳过 |
+| 不支持 | `strategy/matrix`、`services`、`container`：报错停止 |
+| 忽略 | `if`、`needs`：警告后忽略；`on`、`runs-on`：直接忽略 |
+
+自动注入 `CI=true`、`GITHUB_WORKSPACE`、`GITHUB_SHA`、`GITHUB_REF_NAME` 和 `AUTODEPLOY_*`。步骤以 root 执行，部署前将工作目录交还给 `git`。

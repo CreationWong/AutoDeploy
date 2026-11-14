@@ -2,9 +2,9 @@
 
 **用一次 Git Push，完成应用部署。**
 
-AutoDeploy 是一个轻量的自托管部署服务。在自己的 Docker 主机上启动它，把项目代码推送到它提供的 Git 仓库，它就会按项目配置准备环境、执行构建、启动应用并检查运行状态。
+AutoDeploy 是一个自托管部署服务。先在 Docker 主机上启动它，再推送项目代码，即可自动构建、启动和检查应用。
 
-适合个人项目、小型团队和内部服务：保留熟悉的 Git 工作方式，让发布流程跟着代码一起维护。
+适合个人项目、小型团队和内部服务。部署配置与代码放在同一个仓库中。
 
 [从零开始部署第一个网站](docs/getting-started.md) · [部署指南](docs/deployment.md) · [配置参考](docs/configuration.md)
 
@@ -17,7 +17,7 @@ AutoDeploy 是一个轻量的自托管部署服务。在自己的 Docker 主机�
                               失败：尝试恢复上一成功版本
 ```
 
-你只需要先启动 AutoDeploy，再给业务项目添加 `AutoDeploy.config.yaml`。之后发布新版本时，提交并推送代码即可。
+在项目根目录添加 `AutoDeploy.config.yaml`，之后用 `git push` 发布。
 
 ## 你可以用它做什么
 
@@ -41,7 +41,7 @@ AutoDeploy 是一个轻量的自托管部署服务。在自己的 Docker 主机�
 
 ## 配置是什么样的
 
-例如，一个将网页放在 `public/` 目录的演示项目，可以用下面的配置启动：
+下面的配置用 Python 启动 `public/` 中的演示网页：
 
 ```yaml
 version: 1
@@ -59,7 +59,7 @@ healthcheck:
   timeout: 30
 ```
 
-配置文件放在项目根目录。没有这个文件时，推送只保存代码，不会部署。上例使用 Python 自带 HTTP 服务做演示，正式项目可替换为自己的启动命令。
+没有配置文件时，推送只保存代码。正式项目请替换示例的启动命令。
 
 完成首次接入后，日常更新只需要：
 
@@ -69,7 +69,7 @@ git commit -m "Update website"
 git push autodeploy main
 ```
 
-**第一次使用？** [新手教程](docs/getting-started.md)包含完整文件、密码获取、浏览器访问、更新和回滚步骤，无需先克隆本仓库。
+[新手教程](docs/getting-started.md)提供完整步骤：启动服务、推送网站、更新和回滚。
 
 ## 获取 AutoDeploy
 
@@ -81,7 +81,7 @@ docker pull ghcr.io/creationwong/autodeploy:V0.1.3
 
 [查看发布镜像](https://github.com/CreationWong/AutoDeploy/pkgs/container/autodeploy) · [Docker Hub](https://hub.docker.com/r/creationwong/autodeploy) · [服务器部署步骤](docs/deployment.md)
 
-先部署 AutoDeploy 服务，再通过 Git 推送部署业务项目。业务访问由项目自己的 Compose 端口或独立网关提供，Git 推送端口不是网站访问端口。
+业务端口由项目的 Compose 或网关提供。Git 端口只接收代码，不能用于访问网站。
 
 ## 使用文档
 
@@ -104,7 +104,7 @@ AutoDeploy 面向可信管理员的自托管场景。推送权限具有部署执
 
 ## 参与项目
 
-欢迎提交使用反馈、缺陷报告和改进建议：[GitHub Issues](https://github.com/CreationWong/AutoDeploy/issues)。贡献代码前请阅读[开发文档](docs/development.md)；安全问题请按[安全政策](SECURITY.md)私有报告。
+反馈问题请提交 [Issue](https://github.com/CreationWong/AutoDeploy/issues)。贡献代码前请读[开发文档](docs/development.md)，安全问题请按[安全政策](SECURITY.md)私下报告。
 
 ## 许可证
 

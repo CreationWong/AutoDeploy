@@ -1,12 +1,12 @@
 # 从零开始：用 Git Push 部署第一个网站
 
-这篇教程带你在自己的电脑上部署一个简单网站，完成“启动服务 → 推送代码 → 浏览器访问 → 更新 → 回滚”的完整流程。无需注册域名，也无需先把项目上传到 GitHub。
+在本机部署一个网站，练习推送、更新和回滚。无需域名或 GitHub 仓库。
 
-示例使用 AutoDeploy `V0.1.3` 的 `process` 模式：网站运行在 AutoDeploy 内部，nginx 网关负责让浏览器访问它。业务代码始终通过 Git 推送部署。
+示例使用 `V0.1.3`：网站运行在 AutoDeploy 容器内，nginx 提供浏览器入口，业务代码通过 Git 推送部署。
 
 ## 1. 准备环境
 
-需要安装并启动 Docker Engine 或 Docker Desktop，同时准备 Docker Compose v2 和 Git。Windows 请将 Docker Desktop 切换到 Linux 容器，并在 WSL 或 Git Bash 中执行本教程的 Bash 命令；macOS、Linux 可使用终端。
+准备 Docker、Docker Compose v2 和 Git。Windows 使用 Linux 容器，在 WSL 或 Git Bash 中运行命令；macOS、Linux 使用终端。
 
 先检查：
 
@@ -16,9 +16,9 @@ docker compose version
 git --version
 ```
 
-`docker version` 应能显示服务端信息。若提示无法连接 Docker，先启动 Docker 服务。以下步骤在同一台电脑上执行；使用远程服务器的方法见文末。
+`docker version` 应显示服务端信息；连接失败时先启动 Docker。以下操作都在本机执行，远程部署见文末。
 
-教程使用本机 `8080` 和 `8088` 端口。如果端口已被其他程序使用，可在下面的 Compose 文件中修改左侧宿主端口，并同步调整后续 URL。请选一个新的目录，不要在已有业务仓库内操作。
+需要本机端口 `8080` 和 `8088`。如已占用，修改 Compose 左侧端口及后续 URL。请新建目录，不要在已有业务仓库内操作。
 
 ## 2. 创建部署服务
 
@@ -111,9 +111,9 @@ docker compose ps
 docker compose logs --tail=50 autodeploy
 ```
 
-等待 `autodeploy` 显示 `healthy`，日志中出现“启动完成”。第一次启动会下载镜像，需要联网。此时还没有部署网站，访问 `8088` 返回 `502` 是正常的。
+等待状态为 `healthy`，日志出现“启动完成”（Dev 源码为 `Startup complete`）。首次启动需联网下载镜像。网站尚未部署时，访问 `8088` 返回 `502` 属于正常现象。
 
-本教程只使用本机 HTTP 推送，没有配置 SSH 公钥；日志中的“SSH 推送不可用”提示不影响后续步骤。
+本教程使用本机 HTTP，未启用 SSH。“SSH 推送不可用”提示可忽略。
 
 ## 3. 获取推送密码
 
@@ -168,7 +168,7 @@ healthcheck:
   timeout: 30
 ```
 
-配置表示：准备 Python，使用它启动演示网站，启动后检查 HTTP 根路径。只将 `public` 目录作为网站内容，配置文件不会被当作网页公开。Python 自带的 HTTP 服务用于学习演示，正式网站应换成适合业务的服务程序。
+此配置安装 Python、启动网站并检查 HTTP 状态。只公开 `public` 目录，不公开配置文件。Python HTTP 服务仅用于演示，正式项目请替换启动命令。
 
 目录结构应为：
 
@@ -182,7 +182,7 @@ autodeploy-tutorial/
         └── index.html
 ```
 
-`app.git` 是服务器上的仓库名，`hello-site` 是配置中的应用名；两者用途不同，不必同名。当前一个 AutoDeploy 实例配置一个 Git 仓库。
+`app.git` 是仓库名，`hello-site` 是应用名，不必相同。每个 AutoDeploy 实例对应一个 Git 仓库。
 
 ## 5. 第一次推送
 
@@ -192,7 +192,7 @@ autodeploy-tutorial/
 git init -b main
 ```
 
-如果这是第一次使用 Git，需要设置提交作者。将下列占位内容换成你希望记录在提交中的名称和邮箱；这不是 AutoDeploy 的登录凭据：
+首次使用 Git 时设置提交作者。替换下面的名称和邮箱；它们用于提交记录，不是登录凭据：
 
 ```bash
 git config user.name "你的显示名称"
@@ -210,7 +210,7 @@ git push autodeploy main
 
 Git 提示输入密码时，粘贴第 3 步的密码。终端输入密码可能没有回显，这是正常现象。
 
-推送时会显示部署日志。不要只看 Git 是否推送成功：代码已入库后，部署仍可能失败，下一步还要确认应用状态。
+推送会显示部署日志。Git 推送成功只表示代码已保存，还需确认部署状态。
 
 ## 6. 打开网站并确认状态
 
@@ -241,7 +241,7 @@ git push autodeploy main
 
 推送结束后刷新网页即可看到更新。如果页面没有变化，先强制刷新浏览器，再检查部署状态。
 
-日常发布就是这个流程：修改代码、提交、推送。不需要进入服务器手动复制文件或启动业务服务。
+日常发布只需修改、提交、推送，无需手动复制文件或启动业务服务。
 
 ## 8. 练习回滚
 
@@ -302,9 +302,9 @@ docker compose exec autodeploy curl -fsS http://127.0.0.1:3000/
 
 ## 11. 换成远程服务器
 
-服务器部署时，将第 2 步的 Compose 与 nginx 文件放到服务器上，Docker 管理命令也在服务器执行；网站代码和 Git 命令保留在自己的电脑上。推送密码需要按第 3 步从服务器的新实例读取。
+在服务器放置第 2 步的 Compose 和 nginx 配置，并执行 Docker 命令。网站代码和 Git 操作留在本机，密码从服务器按第 3 步读取。
 
-最容易复用本教程的方法，是保持服务器端口绑定 `127.0.0.1`，在自己的电脑另开终端建立 SSH 隧道。把 `your_user` 和 `your_server` 换成服务器的系统登录用户、域名或 IP；这里的用户不是 AutoDeploy 的 `git` 用户：
+保持服务器端口绑定 `127.0.0.1`，在本机另开终端建立 SSH 隧道。将 `your_user` 换成服务器登录用户，`your_server` 换成域名或 IP：
 
 ```bash
 ssh -N \
@@ -315,7 +315,7 @@ ssh -N \
 
 保持该终端开启，Git 推送地址和浏览器地址仍可沿用本教程。若自己的电脑还运行着本地教程实例，请先停止它，避免 `8080`、`8088` 冲突。
 
-这个方式适合自己体验。正式对外提供网站时，在网关配置域名与 HTTPS；远程 Git 推送使用 SSH 或 HTTPS。推送凭据具有部署执行权限，只交给可信管理员。
+正式对外提供网站时配置域名和 HTTPS。远程 Git 推送使用 SSH 或 HTTPS，凭据只交给可信管理员。
 
 ## 下一步
 

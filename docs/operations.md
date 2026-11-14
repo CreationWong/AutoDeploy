@@ -1,6 +1,25 @@
 # 日常管理与故障排查
 
-本文示例使用容器名 `autodeploy`。如果按[新手教程](getting-started.md)用 Compose 启动，请在 `compose.yaml` 所在目录将 `docker exec autodeploy` 或 `docker exec -it autodeploy` 替换为 `docker compose exec autodeploy`，将 `docker logs autodeploy` 替换为 `docker compose logs autodeploy`。
+以下命令使用容器名 `autodeploy`。使用 Compose 时，在配置文件所在目录用 `docker compose exec autodeploy` 代替 `docker exec autodeploy`，用 `docker compose logs autodeploy` 代替 `docker logs autodeploy`。
+
+## 输出语言
+
+语言切换目前仅支持 Dev 源码，V0.1.3 镜像尚不支持。运行提示默认英文，文档保持中文。
+
+首次启动：Compose 使用 `AUTODEPLOY_LANG=zh docker compose up -d --build`，`docker run` 增加 `-e AUTODEPLOY_LANG=zh`。已有实例可直接切换：
+
+```bash
+docker exec autodeploy autodeploy set AUTODEPLOY_LANG zh
+docker exec autodeploy autodeploy help
+
+# 切回英文
+docker exec autodeploy autodeploy set AUTODEPLOY_LANG en
+
+# 仅覆盖这一次管理命令的显示语言
+docker exec -e AUTODEPLOY_LANG=zh autodeploy autodeploy show
+```
+
+语言可设为 `en` 或 `zh`，重启后保留。优先级：单次管理命令的环境变量 > 已保存设置 > 容器启动环境。未知语言或缺少译文时使用英文。历史日志、已保存的状态消息和业务输出不翻译。
 
 ## Git 推送
 
@@ -19,17 +38,21 @@
 
 ## 推送地址日志
 
-轻量镜像通过 `AUTODEPLOY_SSH_PORT` / `AUTODEPLOY_HTTP_PORT` 显示外部端口，compose 会自动注入与发布端口一致的值。使用 `docker run` 时可显式设置这两个变量；未设置则显示地址模板。HTTP 用户名来自现有凭据文件（首次创建时使用 `AUTODEPLOY_HTTP_USER`）。
+日志和 `autodeploy show` 会显示 Git 推送地址。端口按以下顺序确定：
 
-启用 Docker CLI 且可访问 Docker 服务时，启动日志和 `autodeploy show` 优先读取当前容器实际发布的端口。例如 `-p 8096:80` 会显示 `http://autodeploy@<host>:8096/app.git`；没有发布 22 端口且未设置外部 SSH 端口时，会显示 SSH 未发布。
+1. Docker 检测到的实际发布端口（需要 Docker CLI 和 socket）。
+2. `AUTODEPLOY_SSH_PORT` / `AUTODEPLOY_HTTP_PORT` 设置。
+3. 无法确定时显示端口占位符，需手动替换。
 
-可用 `-e AUTODEPLOY_HOST=git.example.com` 指定客户端访问的域名/IP；未指定时，日志使用端口绑定的具体 IP，绑定在 `0.0.0.0` / `::` 则显示 `<host>` 并提示替换。容器无法可靠推断宿主机的公网 IP 或外部域名。
+Compose 自动传入发布端口；网关使用 `GATEWAY_SSH_PORT` / `GATEWAY_HTTP_PORT`。使用 `docker run` 时请自行设置外部端口。检测到端口未发布且未设置外部入口时，会显示未发布提示。
 
-实际端口检测需要 Docker CLI、可访问的 Docker 服务和默认容器 hostname。未挂载 `docker.sock`、构建时禁用 Docker CLI 或自定义 hostname 导致检测失败时，日志使用配置的外部端口；没有配置才显示地址模板。网关覆盖文件会采用 `GATEWAY_SSH_PORT` / `GATEWAY_HTTP_PORT`，也可用 `AUTODEPLOY_SSH_PORT` / `AUTODEPLOY_HTTP_PORT` 显式描述其他外部入口。直接发布的实际端口优先于配置值。端口在每次启动和执行 `autodeploy show` 时重新读取。
+设置 `AUTODEPLOY_HOST` 指定客户端可访问的域名或 IP。未设置时使用具体绑定地址；通配绑定显示 `<host>`，需自行替换。
+
+端口在每次启动和执行 `autodeploy show` 时更新。自定义容器 hostname 可能使端口检测失败。HTTP 用户名以现有凭据文件为准。
 
 ## 容器内管理命令
 
-容器内置 `autodeploy` 命令，进入容器后即可查看/修改设置与提交历史：
+常用管理命令：
 
 ```bash
 docker exec -it autodeploy autodeploy show               # 设置 + 最近提交 + 部署状态
@@ -44,22 +67,22 @@ docker exec -it autodeploy autodeploy help
 
 | 命令 | 说明 |
 | --- | --- |
-| `autodeploy show` | 显示设置（REPO_NAME/触发规则/配置名/端口/用户名）、裸仓库最近提交、各应用部署状态 |
-| `autodeploy set <KEY> <VALUE>` | 修改默认设置，写入 `/data/settings.env` 并即时更新 `/etc/autodeploy/env` |
-| `autodeploy deploy <branch\|tag\|commit>` | 手动部署指定 ref（可对历史提交/标签，用于回滚） |
+| `autodeploy show` | 查看设置、最近提交和部署状态 |
+| `autodeploy set <KEY> <VALUE>` | 保存默认设置，重启后保留 |
+| `autodeploy deploy <branch\|tag\|commit>` | 部署指定分支、标签或提交，可用于回滚 |
 | `autodeploy retry` | 重新部署上次成功提交 |
 | `autodeploy logs [name] [N]` | 查看应用日志（deploy.log / app.log / app.err.log，默认第一个应用、50 行） |
 | `autodeploy log [N]` | 查看当前项目提交历史（默认 10 条，包含分支和标签） |
 | `autodeploy license` | 查看 GNU GPL 第 3 版许可全文 |
 
-- 可修改 KEY：`REPO_NAME`、`DEPLOY_BRANCH`、`DEPLOY_TAG`、`DEPLOY_TAG_MODE`、`AUTODEPLOY_CONFIG_NAME`；
-- 修改对下一次 `git push` 生效，并持久化到 `/data/settings.env`，容器重建后由入口脚本重新加载；
-- 项目级触发规则优先：`AutoDeploy.config.yaml` 的 `deploy` 段会覆盖上述默认值；
-- `REPO_NAME` 只改变部署目录/默认应用名，不会重命名已存在的裸仓库。
+- 可修改：`REPO_NAME`、`DEPLOY_BRANCH`、`DEPLOY_TAG`、`DEPLOY_TAG_MODE`、`AUTODEPLOY_CONFIG_NAME`、`AUTODEPLOY_LANG`。
+- 设置会保存到数据卷，重启后保留；部署规则在下次推送时生效。
+- 项目配置的 `deploy` 规则优先于实例默认值。
+- 修改 `REPO_NAME` 不会重命名已有仓库。
 
 ## 回滚与失败恢复
 
-先用 `autodeploy show` 确认部署状态，再用 `autodeploy log 20` 查找要恢复的提交。在下面的命令中，把 `COMMIT_ID` 替换为实际提交 ID：
+用 `autodeploy show` 查看状态，用 `autodeploy log 20` 查找提交。将 `COMMIT_ID` 换成要恢复的提交 ID：
 
 ```bash
 docker exec autodeploy autodeploy deploy COMMIT_ID
@@ -67,9 +90,11 @@ docker exec autodeploy autodeploy deploy COMMIT_ID
 
 `autodeploy retry` 会重新部署上次成功提交，不是重试最近失败的提交。要重试失败版本，用 `autodeploy deploy` 指定其提交 ID 或分支。
 
-存在可恢复的上一成功版本时，部署失败会尝试自动回退并再次执行健康检查；首次部署失败则停止失败服务。回退后的 `status` 可能为 `success`，但 `failed_commit` 仍记录失败尝试，应同时检查日志与当前运行的提交。应用切换可能短暂中断；自动回退不等于零停机，也不会自动撤销数据库迁移、外部 API 调用等副作用。
+部署失败时，有上一成功版本就尝试回退并重新检查；首次部署失败则停止失败服务。回退成功后状态可为 `success`，`failed_commit` 仍记录失败提交。请结合日志确认当前版本。
 
-手动回滚不改写 Git 分支历史。后续向部署分支推送新提交时，仍会部署该次推送的版本。事务、快照与中断恢复细节见[开发文档](development.md#部署事务与恢复)。
+切换版本可能短暂中断。回退不会撤销数据库修改、外部 API 调用等副作用。
+
+手动回滚不修改 Git 历史。下次推送仍部署新提交。恢复机制见[开发文档](development.md#部署事务与恢复)。
 
 ## 数据与日志
 
@@ -101,32 +126,30 @@ docker exec autodeploy autodeploy deploy COMMIT_ID
 
 ## 安全说明
 
-安全问题请按 [安全政策](../SECURITY.md)通过私有渠道报告。该政策也说明了支持版本和部署权限边界。
+安全问题请按[安全政策](../SECURITY.md)私下报告。
 
-- SSH 只允许 `git` 用户、仅公钥认证，shell 限制为 `git-shell`；
-- SSH 禁止所有转发（包括 Unix socket）、PTY 与用户 rc 脚本；
-- `git` 用户只能通过 sudo 免密执行 `/usr/local/bin/autodeploy-deploy`；
-- 部署脚本校验目标目录必须位于 `/data/deploy` 内；
-- **推送权限 ≈ 容器内 root**：`.AutoDeploy/before.sh`、workflows、`environment.setup` 均以 root 执行，安装/构建使用具有 sudo 部署权限的 `git` 身份。能推送的人仍是受信任管理员，请把推送凭据当 root 凭据保管；常驻业务进程默认使用独立的 `autodeploy-app` 用户，并通过 `setpriv --no-new-privs` 禁止经 setuid 等机制获得新权限；
-- **挂载 `docker.sock` ≈ 宿主机 root**：默认不挂载，仅通过 `docker-compose.docker.yml` 显式启用，或手动为 `docker run` 增加挂载；
-- HTTP Basic 认证默认仅供本机访问，生产远程访问必须经 HTTPS；示例网关也默认只把 HTTP 绑定在本机，不包含证书配置；
-- HTTP 密码由 `/dev/urandom` 生成，不写日志；明文保存在 root-only 的 `/data/credentials/http-password`，认证散列保存在 `/data/htpasswd`；新设密码使用 bcrypt，密码经 stdin 传给 htpasswd；
-- 初始化 HTTP 凭据后清除明文密码环境变量；部署子脚本和业务进程从空环境启动，只注入基础变量与项目声明的 env，不继承部署凭据。需要代理或其它运行变量时请在项目 env 中显式声明；
-- SSH 主机密钥在首次启动时生成，保存在 `/data/ssh`，不随镜像分发。
+- **只向可信管理员开放推送。** 钩子、workflow 和环境初始化可用 root 执行命令；安装和构建使用有部署权限的 `git` 用户。
+- **默认隔离业务进程。** 业务使用 `autodeploy-app`，禁止新增权限；部署目录限制在 `/data/deploy` 内。
+- **按需挂载 Docker socket。** 它授予宿主机容器管理权限，默认关闭。
+- **远程访问使用 SSH 或 HTTPS。** HTTP 默认仅绑定本机，示例网关不含证书配置。
+- **SSH 仅支持公钥。** 只允许 `git` 用户，禁用转发、终端和用户 rc 脚本。
+- **保护凭据和数据卷。** 随机密码只保存在 root 可读的 `/data/credentials/http-password`，不写日志；认证散列使用 bcrypt，保存在 `/data/htpasswd`。
+- **业务进程不继承部署凭据。** 初始化后会清除明文密码，部署命令和业务进程仅接收基础变量及项目 `env`。代理等变量需显式配置。
+- **主机密钥随数据卷保存。** 首次启动生成于 `/data/ssh`，不随镜像分发。
 
-构建上下文采用白名单，仅包含 Dockerfile、许可证、版权声明、入口脚本、运行脚本与服务配置，避免 `.env`、本地工具和其他无关文件被发送给构建器。nginx 访问与错误日志输出到容器日志；默认 compose 使用 `json-file` 并配置每份 10 MiB、最多 3 份的轮转。使用 `docker run` 时可增加 `--log-opt max-size=10m --log-opt max-file=3`。
+镜像只打包白名单内的源码、配置和许可文件。nginx 日志写入容器日志。默认 Compose 日志每份最多 10 MiB，保留 3 份；`docker run` 可增加 `--log-opt max-size=10m --log-opt max-file=3`。
 
 ## 常见问题
 
 - **推送成功但没部署？** 确认分支在 `DEPLOY_BRANCH` 内、根目录存在 `AutoDeploy.config.yaml`，查看 `docker logs autodeploy` 或 `/data/logs/<name>/deploy.log`。
 - **进程没起来？** `docker exec autodeploy supervisorctl status`，再看 `app.err.log`。
-- **推送输出 `[AutoDeploy] 错误: ...` 但 push 成功？** post-receive 在对象入库后运行，无法拒绝推送；实际状态看 `/data/state/<name>/deploy.json`。
+- **推送输出 `[AutoDeploy] Error: ...`（中文模式为 `错误: ...`） 但 push 成功？** post-receive 在对象入库后运行，无法拒绝推送；实际状态看 `/data/state/<name>/deploy.json`。
 - **容器重建后部署还在吗？** 在。裸仓库、工作目录、supervisor 配置、日志、基础环境快照都持久化在 `/data`，入口脚本自动恢复。
 - **应用端口怎么暴露？** `docker-compose` 类型由应用 compose 的 `ports:` 发布；`process` 类型加入外部网络后用 nginx 网关代理，均不需要改 AutoDeploy 自身。
 
 ## 保留数据与升级
 
-`/data` 卷保存仓库、部署版本、凭据和状态。升级前备份该卷及业务应用自己的数据；为获得一致的备份，可安排维护窗口先停止 AutoDeploy，再使用你的卷备份工具。Docker Compose 的 `down` 默认保留命名卷，`down -v` 会删除卷，不能用于日常更新。
+升级前备份 `/data` 卷和业务数据。为保证备份一致，可先停止 AutoDeploy。`docker compose down` 保留命名卷，`down -v` 会删除卷，日常更新不要使用。
 
 使用发布镜像时，在原 Compose 文件中改为选定的新版本标签，再运行：
 
@@ -137,4 +160,4 @@ docker compose logs --tail=100 autodeploy
 docker compose exec autodeploy autodeploy show
 ```
 
-保留原来的项目名、卷映射和配置。源码构建部署使用 `docker compose up -d --build`。业务容器的数据卷、外部数据库与业务用户的 HOME 不等于 AutoDeploy 的 `/data` 卷，需要分别安排持久化和备份。
+升级时保留原项目名、卷映射和配置。源码部署使用 `docker compose up -d --build`。业务卷、外部数据库和业务用户 HOME 需单独持久化和备份。

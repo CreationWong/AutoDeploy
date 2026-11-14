@@ -26,7 +26,7 @@ def wait_ready(container: str) -> str:
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
         output = docker("logs", container)
-        if "启动完成" in output:
+        if "Startup complete" in output:
             return output
         time.sleep(0.5)
     raise RuntimeError(f"测试容器初始化超时：\n{docker('logs', container)}")
@@ -73,7 +73,7 @@ def endpoints(image: str, platform: str | None) -> None:
         port = json.loads(docker("inspect", name))[0]["NetworkSettings"]["Ports"]["80/tcp"][0]["HostPort"]
         expected = f"http://address-test-user@127.0.0.1:{port}/app.git"
         for label, content in [("启动日志", output), ("管理命令", docker("exec", name, "autodeploy", "show"))]:
-            if expected not in content or "SSH 未发布宿主机端口" not in content:
+            if expected not in content or "SSH has no published host port" not in content:
                 raise RuntimeError(f"{label}未显示正确的推送地址 {expected}：\n{content}")
         print("容器日志和管理命令中的实际推送地址检查通过。", flush=True)
     finally:

@@ -24,7 +24,7 @@ config=AutoDeploy.config.yaml
 empty_tree="$(git mktree < /dev/null)"
 commit="$(printf 'no config\n' | git commit-tree "$empty_tree")"
 output="$(autodeploy-post-receive --ref "$commit")"
-[[ "$output" == *'跳过部署'* ]]
+[[ "$output" == *'skipping deployment'* ]]
 test ! -e "$versions"
 
 # Reject symlink and directory configs before making a staging directory.
@@ -36,7 +36,7 @@ for entry in "120000 blob $blob" "040000 tree $empty_tree"; do
     echo 'accepted non-regular config' >&2
     exit 1
   fi
-  [[ "$output" == *'必须是普通文件'* ]]
+  [[ "$output" == *'must be a regular file'* ]]
   test ! -e "$versions"
 done
 
@@ -46,7 +46,7 @@ blob="$(printf 'version: 1\nname: preflight\nstart: sleep 3600\n' | git hash-obj
 tree="$(printf '100755 blob %s\t%s\n' "$blob" "$config" | git mktree)"
 commit="$(printf 'valid config\n' | git commit-tree "$tree")"
 output="$(printf '%040d %s refs/heads/main\n' 0 "$commit" | autodeploy-post-receive)"
-[[ "$output" == *'部署完成'* ]]
+[[ "$output" == *'Deployment complete'* ]]
 test -L /data/deploy/app
 FIXTURE
 
@@ -80,7 +80,7 @@ for mode in direct --prepare-env --restore-compose --stop-compose; do
     echo "accepted config symlink in $mode" >&2
     exit 1
   fi
-  [[ "$output" == *'不能是符号链接'* ]]
+  [[ "$output" == *'must not be a symlink'* ]]
   test ! -e /tmp/unexpected-setup
 done
 FIXTURE
