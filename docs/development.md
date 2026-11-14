@@ -69,7 +69,7 @@ docker compose -f docker-compose.yml -f docker-compose.docker.yml up -d --build
 | `INSTALL_DOCKER_CLI` | `0` | 是否安装 Docker CLI / Compose 插件 |
 | `YQ_VERSION` | `v4.44.3` | YAML 解析工具版本 |
 
-默认镜像不包含 Docker CLI；入口与部署脚本仍以 Bash 运行。不要直接换用 Alpine：环境准备依赖 apt，用户、权限和服务配置也需要重新适配。
+源码默认构建不包含 Docker CLI；GHCR 版本发布显式设置 `INSTALL_DOCKER_CLI=1`，包含 Docker CLI 和 Compose 插件。入口与部署脚本仍以 Bash 运行。不要直接换用 Alpine：环境准备依赖 apt，用户、权限和服务配置也需要重新适配。
 
 ## 本地检查
 

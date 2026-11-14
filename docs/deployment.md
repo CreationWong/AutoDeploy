@@ -41,7 +41,7 @@ docker exec autodeploy ssh-keygen -lf /data/ssh/ssh_host_ed25519_key.pub
 
 ## 启用 Docker Compose 业务部署
 
-默认镜像用于 `process`。部署 `docker-compose` 项目还需在 AutoDeploy 容器内安装 Docker CLI / Compose，并挂载宿主机 socket。只在宿主机安装 Compose 不够。
+GHCR 版本镜像包含 Docker CLI / Compose。部署 `docker-compose` 项目时，还需在 AutoDeploy 容器挂载宿主机 socket（`-v /var/run/docker.sock:/var/run/docker.sock`）。从源码构建时使用下面的覆盖文件安装工具并挂载 socket；只在宿主机安装 Compose 不够。
 
 从源码仓库启动带工具的 AutoDeploy：
 

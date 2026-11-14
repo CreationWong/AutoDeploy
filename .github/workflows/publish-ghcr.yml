@@ -106,6 +106,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
+            INSTALL_DOCKER_CLI=1
             VERSION=${{ needs.version.outputs.tag }}
             REVISION=${{ needs.version.outputs.revision }}
           cache-from: type=gha,scope=ghcr
